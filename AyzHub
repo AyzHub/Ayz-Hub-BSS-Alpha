@@ -401,6 +401,9 @@ local S = {
     TokenRange = 25,       -- StayInField kapaliyken tarla disinda kovalama mesafesi
     AutoPopBubbles = false,
     CollectHoney = true,   -- Honey Token topla (kapali ise atla)
+    PrioMoonCharm = true,  -- Moon Charm tokenini her seyden once topla (tarla disinda da)
+    MoonRange = 150,       -- moon charm arama mesafesi (st)
+    MoonTokenId = "",      -- moon charm dokusu (ID); "Learn" butonuyla ogrenilir, virgulle birden cok
     PrioTokenLink = true,  -- Token Link tokeni varsa once onu topla
     ChaseFireflies = false,
     FireflyNightOnly = true,  -- sadece oyun ici gece iken firefly kov
@@ -423,8 +426,19 @@ local S = {
     ViciousPatrolRounds = 1, -- bir gecede kac tur gezilsin (1 = her tarla bir kez, 0 = sinirsiz)
     PreciseTargets = true, -- Precise Bee "Target Practice": 3 hedefin uzerine sirayla gel, sonra farma don
     TargetHoldSec = 0.9,   -- her hedefin uzerinde ne kadar kalinsin (sn)
+    AutoSprouts = false,   -- sprout cikinca o tarlaya git, patlayana kadar orada farm et
+    SproutGiveUpMin = 6,   -- tek bir sprout icin en uzun sure (dk); sonra birakilir
+    AutoPuffshrooms = false, -- puffshroom cikinca o tarlaya git, patlayana kadar orada farm et
+    PuffGiveUpMin = 10,    -- tek bir puffshroom icin en uzun sure (dk); sonra birakilir
     AutoStickers = false,  -- etraftaki sticker'lari topla
     StickerRange = 120,    -- sticker arama mesafesi (st)
+    StickerTokens = true,     -- yerdeki STICKER TOKEN'lerini topla (tarla disinda da)
+    StickerTokenRange = 120,  -- sticker token arama mesafesi (st)
+    StickerTokenId = "",      -- sticker token dokusu (ID); "Learn" butonuyla ogrenilir, virgulle birden cok
+    RainbowTokens = true,     -- RENKLERINE bakarak (rengarenk) sticker token'i algila ve topla
+    RainbowRange = 120,       -- rainbow sticker token arama mesafesi (st)
+    StickerTweenSpeed = 120,  -- sticker token'lara tween hizi (st/sn)
+    RainbowMinHues = 3,       -- en az kac farkli renk tonu (1-6) gorulunce "rengarenk" sayilsin
     Noclip = true,         -- Vicious / firefly ararken duvarlardan gec
     KillMondo = false,     -- Mondo Chick dogunca Mountain Top'a git, ustunde ucarak oldur
     MondoFlyHeight = 25,   -- Mondo Chick'in USTUNDE ucma yuksekligi (st)
@@ -440,12 +454,20 @@ local S = {
 
     -- kovan
     Convert = true,
+    EventPriority = true,  -- Vicious / firefly varsa bal yapmadan ONCE onlar (canta dolu olsa bile)
     ConvertAt = 100,       -- cantanin % kaci dolunca kovana donulur
     ConvertTimeout = 120,  -- donusturme icin en uzun bekleme (sn)
 
     -- dispenserlar
     AutoDispensers = false,
     DispenserMinutes = 30,
+    AutoWealthClock = false, -- Wealth Clock (saatte 1 kez Ticket) otomatik alinsin
+    WealthClockMinutes = 61, -- iki alis arasi (dk); oyunda bekleme suresi 60 dk
+    AutoBoosters = false,    -- Field Booster'lar (mavi / kirmizi / beyaz) olduklari yerden otomatik kullanilsin
+    BoosterMinutes = 46,     -- iki kullanim arasi (dk); oyunda bekleme suresi 45 dk
+    BoostBlue = true,
+    BoostRed = true,
+    BoostWhite = true,
 
     -- Polar Bear gorevi
     PolarQuest = false,
@@ -457,6 +479,35 @@ local S = {
     QuestInterval = 10,    -- gorev listesini kac sn'de bir oku
     QuestRetryMin = 4,     -- Polar Bear'i kac dk'da bir ziyaret et
     QuestRotateMin = 3,    -- birden fazla gorev tarlasi varsa kac dk'da bir degistir
+
+    -- sprinkler
+    AutoSprinkler = false,
+    SprinklerCount = 1,      -- tarla basina yerlestirilecek sprinkler sayisi (1-5)
+    SprinklerSpacing = 22,   -- sprinklerlerin merkezden uzakligi (st)
+
+    -- bloom
+    FarmBlooms = false,
+    BloomOnlyFarmField = true, -- sadece auto farmda kasilan tarladaki bloom'lari kas (baska tarlaya gitme)
+    BloomGiveUpSec = 40,     -- tek bir bloom icin en uzun sure (sn)
+    BloomPetalRange = 70,    -- petal arama mesafesi (st)
+    BloomBlack = true,
+    BloomGray = true,
+    BloomYellow = true,
+    BloomWhite = true,
+    BloomPink = true,
+    BloomRed = true,
+    BloomScarlet = true,
+    BloomCyan = true,
+    BloomViolet = true,
+    BloomMerrygold = true,
+    BloomGreen = true,
+    BloomOther = true,       -- rengi anlasilamayan bloom / petal'ler
+
+    -- discord webhook
+    WebhookUrl = "",
+    WebhookReport = false,   -- belli araliklarla stinger raporu yolla
+    WebhookMinutes = 20,
+    WebhookOnKill = true,    -- Vicious Bee olunce stinger kazancini yolla
 
     -- diger
     AntiAFK = true,
@@ -635,9 +686,9 @@ end
 
 --- Hedefi TAKIP EDEREK tween (hareketli hedefler icin). getGoal() her karede cagrilir.
 --- arriveDist icine girince true doner. Farm kapanirsa / sure dolarsa false.
-local function tweenFollow(getGoal, arriveDist, maxTime)
+local function tweenFollow(getGoal, arriveDist, maxTime, customSpeed)
     local t0 = tick()
-    local speed = math.max(20, S.TravelSpeed)
+    local speed = math.max(20, customSpeed or S.TravelSpeed)
     while running and S.AutoFarm and tick() - t0 < (maxTime or 12) do
         if S.Noclip then
             env.BSSNoclipUntil = tick() + 0.3
@@ -725,6 +776,7 @@ local function claimHive()
 end
 
 local converting = false
+local eventPendingFn = nil -- asagida doldurulur: Vicious / firefly bekliyor mu?
 
 local function convert()
     local hive = myHive()
@@ -769,6 +821,11 @@ local function convert()
         local last = stat("Pollen")
         local started, lastCheck = tick(), tick()
         while running and S.AutoFarm and stat("Pollen") > 0 and tick() - started < S.ConvertTimeout do
+            -- donusturme sirasinda Vicious / firefly cikarsa: birak, once onlara git
+            if S.EventPriority and eventPendingFn and eventPendingFn() then
+                setStatus("event spotted: leaving the hive before converting is done...")
+                break
+            end
             if tick() - lastCheck > 3 then
                 local now = stat("Pollen")
                 if now >= last then
@@ -1082,6 +1139,14 @@ task.spawn(function()
 end)
 
 local function currentFieldName()
+    local sp = env.BSSSprout
+    if (S.AutoSprouts or S.AutoPuffshrooms) and sp and sp.zoneName then
+        return sp.zoneName -- sprout / puffshroom grind: nesnenin oldugu tarla (S.Field / quest tarlasindan once)
+    end
+    local bl = env.BSSBloom
+    if S.FarmBlooms and bl and bl.zoneName then
+        return bl.zoneName -- secili renkte bloom olan tarla
+    end
     if S.PolarQuest and S.QuestFarmFields and questState.field then
         return questState.field
     end
@@ -1166,6 +1231,469 @@ do
     end
     tokenKit.isHoney = isHoneyToken
 
+    -- ---------------------------------------------------------- Sticker token
+    -- Collectibles icinde; adi / alt nesnesi / ozelligi "sticker" iceren ya da dokusu
+    -- S.StickerTokenId'deki ID'lerden biri olan token. (ID'yi "Learn sticker token" ogrenir)
+    local stickerCache = setmetatable({}, { __mode = "k" })
+    local stickerCacheKey = nil
+    tokenKit.stickerSkip = setmetatable({}, { __mode = "k" })
+
+    local function isStickerToken(p)
+        local key = tostring(S.StickerTokenId or "")
+        if stickerCacheKey ~= key then -- ID listesi degisti: onbellegi sifirla
+            stickerCache = setmetatable({}, { __mode = "k" })
+            stickerCacheKey = key
+        end
+        local c = stickerCache[p]
+        if c ~= nil then
+            return c
+        end
+        if string.find(string.lower(p.Name), "sticker", 1, true) then
+            stickerCache[p] = true
+            return true
+        end
+        local okA, attrs = pcall(function() return p:GetAttributes() end)
+        if okA and type(attrs) == "table" then
+            for k, v in pairs(attrs) do
+                if string.find(string.lower(tostring(k)), "sticker", 1, true)
+                    or (type(v) == "string" and string.find(string.lower(v), "sticker", 1, true)) then
+                    stickerCache[p] = true
+                    return true
+                end
+            end
+        end
+        local ids = {}
+        for id in string.gmatch(key, "%d+") do
+            ids[#ids + 1] = id
+        end
+        local inspected = false
+        local okd, list = pcall(function() return p:GetDescendants() end)
+        local candidates = okd and list or {}
+        candidates[#candidates + 1] = p
+        for _, d in ipairs(candidates) do
+            if d ~= p and string.find(string.lower(d.Name), "sticker", 1, true) then
+                stickerCache[p] = true
+                return true
+            end
+            local okt, tex = pcall(textureOf, d)
+            if okt and tex and tex ~= "" then
+                inspected = true
+                if string.find(string.lower(tex), "sticker", 1, true) then
+                    stickerCache[p] = true
+                    return true
+                end
+                for _, id in ipairs(ids) do
+                    if string.find(tex, id, 1, true) then
+                        stickerCache[p] = true
+                        return true
+                    end
+                end
+            end
+        end
+        if inspected then
+            stickerCache[p] = false -- dokusu yuklendi ve eslesmedi
+        end
+        return false
+    end
+    tokenKit.isSticker = isStickerToken
+
+    -- ---------------------------------------------------------- Moon Charm token
+    -- Adi / alt nesnesi / ozelligi "moon" iceren ya da dokusu S.MoonTokenId'deki ID'lerden biri
+    -- olan token. (ID'yi "Learn moon charm token" butonu ogrenir.)
+    local moonCache = setmetatable({}, { __mode = "k" })
+    local moonCacheKey = nil
+
+    local function isMoonToken(p)
+        local key = tostring(S.MoonTokenId or "")
+        if moonCacheKey ~= key then -- ID listesi degisti: onbellegi sifirla
+            moonCache = setmetatable({}, { __mode = "k" })
+            moonCacheKey = key
+        end
+        local c = moonCache[p]
+        if c ~= nil then
+            return c
+        end
+        if isHoneyToken(p) or isTokenLink(p) then
+            moonCache[p] = false
+            return false
+        end
+        if string.find(string.lower(p.Name), "moon", 1, true) then
+            moonCache[p] = true
+            return true
+        end
+        local okA, attrs = pcall(function() return p:GetAttributes() end)
+        if okA and type(attrs) == "table" then
+            for k, v in pairs(attrs) do
+                if string.find(string.lower(tostring(k)), "moon", 1, true)
+                    or (type(v) == "string" and string.find(string.lower(v), "moon", 1, true)) then
+                    moonCache[p] = true
+                    return true
+                end
+            end
+        end
+        local ids = {}
+        for id in string.gmatch(key, "%d+") do
+            ids[#ids + 1] = id
+        end
+        local inspected = false
+        local okd, list = pcall(function() return p:GetDescendants() end)
+        local candidates = okd and list or {}
+        candidates[#candidates + 1] = p
+        for _, d in ipairs(candidates) do
+            if d ~= p and string.find(string.lower(d.Name), "moon", 1, true) then
+                moonCache[p] = true
+                return true
+            end
+            local okt, tex = pcall(textureOf, d)
+            if okt and tex and tex ~= "" then
+                inspected = true
+                if string.find(string.lower(tex), "moon", 1, true) then
+                    moonCache[p] = true
+                    return true
+                end
+                for _, id in ipairs(ids) do
+                    if string.find(tex, id, 1, true) then
+                        moonCache[p] = true
+                        return true
+                    end
+                end
+            end
+        end
+        if inspected then
+            moonCache[p] = false -- dokusu yuklendi ve eslesmedi
+        end
+        return false
+    end
+    tokenKit.isMoon = isMoonToken
+
+    -- Yanindaki (<=20 st) token'in doku ID'lerini moon charm olarak kaydeder.
+    tokenKit.learnMoon = function()
+        local root = hrp()
+        local col = workspace:FindFirstChild("Collectibles")
+        if not root or not col then
+            setStatus("learn: Collectibles / character missing")
+            return
+        end
+        local best, bestD
+        for _, p in ipairs(col:GetChildren()) do
+            local ok, pos = pcall(posOf, p)
+            if ok and pos then
+                local d = (pos - root.Position).Magnitude
+                if d <= 20 and (not bestD or d < bestD) then
+                    best, bestD = p, d
+                end
+            end
+        end
+        if not best then
+            setStatus("learn: no token within 20 st - stand right next to the moon charm token")
+            return
+        end
+        local known, all = {}, {}
+        for id in string.gmatch(tostring(S.MoonTokenId or ""), "%d+") do
+            if not known[id] then
+                known[id] = true
+                all[#all + 1] = id
+            end
+        end
+        local sticker = {}
+        for id in string.gmatch(tostring(S.StickerTokenId or ""), "%d+") do
+            sticker[id] = true
+        end
+        local items = best:GetDescendants()
+        items[#items + 1] = best
+        local added = {}
+        for _, d in ipairs(items) do
+            local okt, tex = pcall(textureOf, d)
+            if okt and tex and tex ~= "" then
+                local id = string.match(tex, "%d%d%d%d%d+")
+                -- Honey / Token Link / sticker dokularini moon charm diye ogrenme
+                if id and not known[id] and id ~= HONEY_ID and id ~= LINK_ID and not sticker[id] then
+                    known[id] = true
+                    all[#all + 1] = id
+                    added[#added + 1] = id
+                end
+            end
+        end
+        if #added == 0 then
+            setStatus("learn: " .. best.Name .. " has no new texture (honey / link / sticker / already learned)")
+            print("[BSSFarm] moon learn: nothing new on", best.Name, "| known ids:", S.MoonTokenId)
+            return
+        end
+        S.MoonTokenId = table.concat(all, ",")
+        moonCacheKey = nil -- onbellegi sifirla
+        save()
+        setStatus("learned moon charm texture: " .. table.concat(added, ", "))
+        print("[BSSFarm] moon charm ids learned from", best.Name, ":", table.concat(added, ", "), "| all:", S.MoonTokenId)
+    end
+
+    -- ---------------------------------------------------------- Rainbow (renk) algilama
+    -- Sticker tokenler rengarenk: token'in uzerindeki / icindeki renkleri (ParticleEmitter,
+    -- UIGradient, Beam, Trail, Light, Decal / Texture / Image rengi, Part rengi) toplar,
+    -- doygun renklerin 6 ton kovasindan (kirmizi, sari, yesil, cyan, mavi, magenta) kacina
+    -- dustugune bakar. Renk zamanla degisiyorsa (animasyonlu gokkusagi) ornekler biriktirilir.
+    -- Honey Token ve Token Link her zaman haric tutulur.
+    local rbRec = setmetatable({}, { __mode = "k" })   -- token -> { mask, samples, last, born }
+    local rbFinal = setmetatable({}, { __mode = "k" }) -- token -> true / false (kesinlesti)
+    tokenKit.rainbowSkip = setmetatable({}, { __mode = "k" })
+
+    local function hueBit(c)
+        local ok, h, s, v = pcall(function() return c:ToHSV() end)
+        if not ok or not h then
+            return 0
+        end
+        if s < 0.35 or v < 0.35 then
+            return 0 -- gri / siyah / beyaz / soluk: renk sayma
+        end
+        return bit32.lshift(1, math.floor(h * 6) % 6)
+    end
+
+    local function seqMask(seq)
+        local m = 0
+        local ok, kps = pcall(function() return seq.Keypoints end)
+        if ok and kps then
+            for _, kp in ipairs(kps) do
+                m = bit32.bor(m, hueBit(kp.Value))
+            end
+        end
+        return m
+    end
+
+    local function popcount(m)
+        local n = 0
+        for i = 0, 5 do
+            if bit32.band(m, bit32.lshift(1, i)) ~= 0 then
+                n = n + 1
+            end
+        end
+        return n
+    end
+
+    -- Bu andaki renk maskesi (token + tum alt nesneleri)
+    local function colorMaskOf(p)
+        local mask = 0
+        local okd, list = pcall(function() return p:GetDescendants() end)
+        local items = okd and list or {}
+        items[#items + 1] = p
+        for _, d in ipairs(items) do
+            pcall(function()
+                if d:IsA("ParticleEmitter") or d:IsA("Beam") or d:IsA("Trail") then
+                    mask = bit32.bor(mask, seqMask(d.Color))
+                elseif d:IsA("UIGradient") then
+                    mask = bit32.bor(mask, seqMask(d.Color))
+                elseif d:IsA("Decal") or d:IsA("Texture") then
+                    mask = bit32.bor(mask, hueBit(d.Color3))
+                elseif d:IsA("ImageLabel") or d:IsA("ImageButton") then
+                    mask = bit32.bor(mask, hueBit(d.ImageColor3))
+                elseif d:IsA("Light") then
+                    mask = bit32.bor(mask, hueBit(d.Color))
+                elseif d:IsA("Sparkles") then
+                    mask = bit32.bor(mask, hueBit(d.SparkleColor))
+                elseif d:IsA("Fire") then
+                    mask = bit32.bor(mask, hueBit(d.Color) , hueBit(d.SecondaryColor))
+                elseif d:IsA("Smoke") then
+                    mask = bit32.bor(mask, hueBit(d.Color))
+                elseif d:IsA("BasePart") then
+                    mask = bit32.bor(mask, hueBit(d.Color))
+                end
+            end)
+        end
+        return mask
+    end
+
+    -- Token rengarenk mi? (true = evet, false = hayir / henuz belli degil)
+    local function isRainbowToken(p)
+        local fin = rbFinal[p]
+        if fin ~= nil then
+            return fin
+        end
+        if isHoneyToken(p) or isTokenLink(p) or isMoonToken(p) then
+            rbFinal[p] = false
+            return false
+        end
+        local now = tick()
+        local rec = rbRec[p]
+        if not rec then
+            rec = { mask = 0, samples = 0, last = 0, born = now }
+            rbRec[p] = rec
+        end
+        if now - rec.last >= 0.2 then -- en fazla 0.2 sn'de bir ornek (performans)
+            rec.last = now
+            rec.samples = rec.samples + 1
+            rec.mask = bit32.bor(rec.mask, colorMaskOf(p))
+        end
+        local need = math.clamp(math.floor(S.RainbowMinHues or 3), 1, 6)
+        if popcount(rec.mask) >= need then
+            rbFinal[p] = true
+            return true
+        end
+        -- ~1.4 sn gozlendi ve hala rengarenk degil: kesin "degil"
+        if rec.samples >= 7 then
+            rbFinal[p] = false
+        end
+        return false
+    end
+    tokenKit.isRainbow = isRainbowToken
+
+    -- Menzildeki en yakin rengarenk sticker token (tarla siniri YOK). 0.15 sn onbellekli.
+    local rbNext, rbResult = 0, nil
+    tokenKit.nearestRainbow = function(origin, range)
+        local now = tick()
+        if now < rbNext then
+            if rbResult and rbResult.Parent and (tokenKit.rainbowSkip[rbResult] or 0) < now then
+                return rbResult
+            elseif not rbResult then
+                return nil
+            end
+        end
+        rbNext = now + 0.15
+        rbResult = nil
+        local col = workspace:FindFirstChild("Collectibles")
+        if not col then
+            return nil
+        end
+        local best, bestD = nil, math.huge
+        for _, p in ipairs(col:GetChildren()) do
+            if (tokenKit.rainbowSkip[p] or 0) < now and (p:IsA("BasePart") or p:IsA("Model")) then
+                local ok, ppos = pcall(posOf, p)
+                if ok and ppos then
+                    local d = (ppos - origin).Magnitude
+                    if d <= range and d < bestD and not (env.BSSSprout and env.BSSSprout.blocksPickup and env.BSSSprout.blocksPickup(ppos)) and isRainbowToken(p) then
+                        best, bestD = p, d
+                    end
+                end
+            end
+        end
+        rbResult = best
+        return best, bestD
+    end
+
+    -- Yakindaki tokenlarin renk tonlarini yazdirir (esigi ayarlamak icin)
+    tokenKit.rainbowDebug = function()
+        print("[BSSFarm] ---------------- rainbow token debug ----------------")
+        local root = hrp()
+        local col = workspace:FindFirstChild("Collectibles")
+        if not root or not col then
+            print("[BSSFarm] workspace.Collectibles or character missing")
+            return
+        end
+        local list = {}
+        for _, p in ipairs(col:GetChildren()) do
+            local ok, pos = pcall(posOf, p)
+            if ok and pos then
+                list[#list + 1] = { p = p, d = (pos - root.Position).Magnitude }
+            end
+        end
+        table.sort(list, function(a, b) return a.d < b.d end)
+        local names = { "red", "yellow", "green", "cyan", "blue", "magenta" }
+        for i = 1, math.min(#list, 25) do
+            local p = list[i].p
+            local m = colorMaskOf(p)
+            local hues = {}
+            for b = 0, 5 do
+                if bit32.band(m, bit32.lshift(1, b)) ~= 0 then
+                    hues[#hues + 1] = names[b + 1]
+                end
+            end
+            local rec = rbRec[p]
+            print("[BSSFarm] token:", p.Name, string.format("%.0f st", list[i].d),
+                "| hues now:", popcount(m), "(" .. table.concat(hues, ",") .. ")",
+                "| accumulated:", rec and popcount(rec.mask) or 0,
+                "| rainbow:", tostring(isRainbowToken(p)))
+        end
+        print("[BSSFarm] min hues needed:", S.RainbowMinHues, "| collectibles total:", #list)
+        setStatus("rainbow debug printed to the console (F9)")
+    end
+
+    -- Menzildeki en yakin sticker token (tarla siniri YOK). 0.15 sn onbellekli.
+    local stNext, stResult = 0, nil
+    tokenKit.nearestSticker = function(origin, range)
+        local now = tick()
+        if now < stNext then
+            if stResult and stResult.Parent and (tokenKit.stickerSkip[stResult] or 0) < now then
+                return stResult
+            elseif not stResult then
+                return nil
+            end
+        end
+        stNext = now + 0.15
+        stResult = nil
+        local col = workspace:FindFirstChild("Collectibles")
+        if not col then
+            return nil
+        end
+        local best, bestD = nil, math.huge
+        for _, p in ipairs(col:GetChildren()) do
+            if (tokenKit.stickerSkip[p] or 0) < now and (p:IsA("BasePart") or p:IsA("Model")) then
+                local ok, ppos = pcall(posOf, p)
+                if ok and ppos then
+                    local d = (ppos - origin).Magnitude
+                    if d <= range and d < bestD and not (env.BSSSprout and env.BSSSprout.blocksPickup and env.BSSSprout.blocksPickup(ppos)) and isStickerToken(p) then
+                        best, bestD = p, d
+                    end
+                end
+            end
+        end
+        stResult = best
+        return best, bestD
+    end
+
+    -- Yanindaki (<=20 st) token'in doku ID'lerini sticker token olarak kaydeder.
+    tokenKit.learnSticker = function()
+        local root = hrp()
+        local col = workspace:FindFirstChild("Collectibles")
+        if not root or not col then
+            setStatus("learn: Collectibles / character missing")
+            return
+        end
+        local best, bestD
+        for _, p in ipairs(col:GetChildren()) do
+            local ok, pos = pcall(posOf, p)
+            if ok and pos then
+                local d = (pos - root.Position).Magnitude
+                if d <= 20 and (not bestD or d < bestD) then
+                    best, bestD = p, d
+                end
+            end
+        end
+        if not best then
+            setStatus("learn: no token within 20 st - stand right next to the sticker token")
+            return
+        end
+        local known, all = {}, {}
+        for id in string.gmatch(tostring(S.StickerTokenId or ""), "%d+") do
+            if not known[id] then
+                known[id] = true
+                all[#all + 1] = id
+            end
+        end
+        local items = best:GetDescendants()
+        items[#items + 1] = best
+        local added = {}
+        for _, d in ipairs(items) do
+            local okt, tex = pcall(textureOf, d)
+            if okt and tex and tex ~= "" then
+                local id = string.match(tex, "%d%d%d%d%d+")
+                -- Honey / Token Link dokularini sticker diye ogrenme
+                if id and not known[id] and id ~= HONEY_ID and id ~= LINK_ID then
+                    known[id] = true
+                    all[#all + 1] = id
+                    added[#added + 1] = id
+                end
+            end
+        end
+        if #added == 0 then
+            setStatus("learn: " .. best.Name .. " has no new texture (honey / link / already learned)")
+            print("[BSSFarm] sticker learn: nothing new on", best.Name, "| known ids:", S.StickerTokenId)
+            return
+        end
+        S.StickerTokenId = table.concat(all, ",")
+        stickerCacheKey = nil -- onbellegi sifirla
+        save()
+        setStatus("learned sticker token texture: " .. table.concat(added, ", "))
+        print("[BSSFarm] sticker token ids learned from", best.Name, ":", table.concat(added, ", "),
+            "| all:", S.StickerTokenId)
+    end
+
     local function nearestToken(center, radius, bubblesOnly, zone)
         local st = scanState[bubblesOnly and 2 or 1]
         local now = tick()
@@ -1205,12 +1733,15 @@ do
         local prio = (not bubblesOnly) and S.PrioTokenLink
         local best, bestD = nil, math.huge
         local bestLink, bestLinkD = nil, math.huge
+        local moonPrio = (not bubblesOnly) and S.PrioMoonCharm
+        local bestMoon, bestMoonD = nil, math.huge
         for _, folder in ipairs(folders) do
             for _, p in ipairs(folder:GetChildren()) do
                 if (skipped[p] or 0) < now
                     and (p:IsA("BasePart") or p:IsA("Model"))
                     and (not bubblesOnly or string.find(string.lower(p.Name), "bubble"))
-                    and (bubblesOnly or S.CollectHoney or not isHoneyToken(p)) then
+                    and (bubblesOnly or S.CollectHoney or not isHoneyToken(p))
+                    and not (env.BSSBloom and env.BSSBloom.skipToken and env.BSSBloom.skipToken(p)) then
                     local ok, ppos = pcall(posOf, p)
                     if ok and ppos then
                         local allowed
@@ -1224,6 +1755,9 @@ do
                             if d < bestD then
                                 best, bestD = p, d
                             end
+                            if moonPrio and d < bestMoonD and isMoonToken(p) then
+                                bestMoon, bestMoonD = p, d
+                            end
                             if prio and d < bestLinkD and isTokenLink(p) then
                                 bestLink, bestLinkD = p, d
                             end
@@ -1232,7 +1766,7 @@ do
                 end
             end
         end
-        best = bestLink or best -- Token Link varsa her zaman o once
+        best = bestMoon or bestLink or best -- Moon Charm, sonra Token Link, sonra en yakin
         st.result = best
         return best
     end
@@ -1241,6 +1775,9 @@ do
     nearestCollectible = function(center, radius, zone)
         local bubble = S.AutoPopBubbles and nearestToken(center, radius, true, zone) or nil
         local token = S.Tokens and nearestToken(center, radius, false, zone) or nil
+        if token and S.PrioMoonCharm and isMoonToken(token) then
+            return token
+        end
         if token and S.PrioTokenLink and isTokenLink(token) then
             return token
         end
@@ -1285,7 +1822,8 @@ do
                 texs[#texs + 1] = tex
             end
             print("[BSSFarm] token:", p.Name, p.ClassName, string.format("%.0f st", list[i].d),
-                "| link:", tostring(isTokenLink(p)), "| honey:", tostring(isHoneyToken(p)), "| tex:", table.concat(texs, ", "))
+                "| link:", tostring(isTokenLink(p)), "| moon:", tostring(isMoonToken(p)), "| honey:", tostring(isHoneyToken(p)),
+                "| sticker:", tostring(tokenKit.isSticker and tokenKit.isSticker(p) or false), "| tex:", table.concat(texs, ", "))
         end
         print("[BSSFarm] collectibles total:", #list)
         setStatus("token debug printed to the console (F9)")
@@ -2259,6 +2797,9 @@ local function onViciousText(text)
     if S.KillMondo and env.BSSMondo and env.BSSMondo.onText then
         pcall(env.BSSMondo.onText, text)
     end
+    if (S.AutoSprouts or S.AutoPuffshrooms) and env.BSSSprout and env.BSSSprout.onText then
+        pcall(env.BSSSprout.onText, text)
+    end
     if fireflyTextHandler and type(text) == "string" then
         pcall(fireflyTextHandler, text)
     end
@@ -2701,6 +3242,47 @@ local function fireflyHint()
         return fireflySignal
     end
     return nil
+end
+
+-- Firefly tarafinda GERCEKTEN yapilacak is var mi? (sadece "gece" olmasi yetmez:
+-- gece boyunca fireflyActive() true kalir, bu yuzden canta dolu iken bos yere kovana
+-- donmeyi engellememek icin hedef / charm / ipucu / bekleme suresi aranir.)
+local function fireflyBusy()
+    if not S.ChaseFireflies then
+        return false
+    end
+    local st = fireflyState
+    if st.charmCenter then
+        return true
+    end
+    if not fireflyActive() then
+        return false
+    end
+    if targetPos(findFirefly()) then
+        return true
+    end
+    if fireflyHint() then
+        return true
+    end
+    return st.lastPos ~= nil and tick() < (st.lingerUntil or 0)
+end
+
+-- Vicious Bee tarafinda bekleyen is var mi?
+local function viciousBusy()
+    if not S.KillVicious then
+        return false
+    end
+    if viciousPositionOf(findViciousBee()) then
+        return true
+    end
+    if viciousHintZone() then
+        return true
+    end
+    return false
+end
+
+eventPendingFn = function()
+    return viciousBusy() or fireflyBusy()
 end
 
 -- Hicbir bilgi yoksa: 6 tarlanin yuklenmesini oyundan iste (karakteri gondermeden),
@@ -3193,6 +3775,100 @@ local function collectAllDispensers()
     return true
 end
 
+-- ------------------------------------------------------- Wealth Clock
+-- Saatte 1 kez Ticket veren Wealth Clock. Yurumeden, OLDUGUN YERDEN Events.ToyEvent ile alinir
+-- (dispenserlarla ayni yol) ama bekleme suresi 60 dk oldugu icin kendi zamanlayicisi var.
+-- (Yeni top-level local acilmasin diye env.BSSWealth icinde.)
+env.BSSWealth = { nextAt = 0 }
+
+env.BSSWealth.claim = function()
+    local C = env.BSSWealth
+    local events = RS:FindFirstChild("Events")
+    local toyEvent = events and events:FindFirstChild("ToyEvent")
+    if not toyEvent then
+        setStatus("Events.ToyEvent not found")
+        C.nextAt = tick() + 30
+        return
+    end
+    pcall(function() toyEvent:FireServer("Wealth Clock") end)
+    setStatus("requested the Wealth Clock")
+    C.nextAt = tick() + math.max(5, S.WealthClockMinutes) * 60
+end
+
+-- ------------------------------------------------------- Field Booster'lar
+-- Mavi / kirmizi / beyaz Field Booster'i YURUMEDEN, OLDUGUN YERDEN Events.ToyEvent ile kullanir
+-- (dispenserlar / Wealth Clock ile ayni yol). Gercek adlar workspace.Toys icinden okunur,
+-- bulunamazsa bilinen adlar denenir. (Yeni top-level local acilmasin diye env.BSSBooster icinde.)
+env.BSSBooster = {
+    nextAt = 0,
+    defaults = {
+        { key = "BoostBlue", name = "Blue Field Booster", match = "blue" },
+        { key = "BoostRed", name = "Red Field Booster", match = "red" },
+        { key = "BoostWhite", name = "Field Booster", match = "white" },
+    },
+}
+
+env.BSSBooster.names = function()
+    local C = env.BSSBooster
+    local found = {}
+    local toys = workspace:FindFirstChild("Toys")
+    if toys then
+        for _, ch in ipairs(toys:GetChildren()) do
+            local n = string.lower(ch.Name)
+            if string.find(n, "booster", 1, true) then
+                found[#found + 1] = ch.Name
+            end
+        end
+    end
+    local list, used = {}, {}
+    for _, d in ipairs(C.defaults) do
+        if S[d.key] then
+            local use = d.name
+            for _, fname in ipairs(found) do
+                local n = string.lower(fname)
+                local isBlue = string.find(n, "blue", 1, true) ~= nil
+                local isRed = string.find(n, "red", 1, true) ~= nil
+                local hit = (d.match == "blue" and isBlue) or (d.match == "red" and isRed)
+                    or (d.match == "white" and not isBlue and not isRed)
+                if hit then
+                    use = fname
+                    break
+                end
+            end
+            if not used[use] then
+                used[use] = true
+                list[#list + 1] = use
+            end
+        end
+    end
+    return list
+end
+
+env.BSSBooster.use = function()
+    local C = env.BSSBooster
+    local events = RS:FindFirstChild("Events")
+    local toyEvent = events and events:FindFirstChild("ToyEvent")
+    if not toyEvent then
+        setStatus("Events.ToyEvent not found")
+        C.nextAt = tick() + 30
+        return
+    end
+    local names = C.names()
+    if #names == 0 then
+        C.nextAt = tick() + 30
+        return
+    end
+    for _, name in ipairs(names) do
+        if not running or not S.AutoBoosters then
+            return
+        end
+        pcall(function() toyEvent:FireServer(name) end)
+        task.wait(0.3)
+    end
+    setStatus("used boosters: " .. table.concat(names, ", "))
+    C.nextAt = tick() + math.max(5, S.BoosterMinutes) * 60
+end
+
 -- ------------------------------------------------------------------ ana dongu
 
 -- Ates bocekleri bittikten sonra ortada cikan token (moon charm) icin:
@@ -3670,7 +4346,7 @@ stickerKit.nearest = function(origin)
             local p = targetPos(inst)
             if p then
                 local d = (p - origin).Magnitude
-                if d <= S.StickerRange and (not bestD or d < bestD) then
+                if d <= S.StickerRange and (not bestD or d < bestD) and not (env.BSSSprout and env.BSSSprout.blocksPickup and env.BSSSprout.blocksPickup(p)) then
                     best, bestD = inst, d
                 end
             end
@@ -3742,6 +4418,159 @@ stickerKit.step = function(root)
         stickerKit.skip[st] = tick() + (stickerKit.tries[st] >= 2 and 300 or 15)
     else
         stickerKit.count = stickerKit.count + 1
+    end
+    return true
+end
+
+-- Moon Charm token: her sticker / token islemlerinden ONCE, tarla disinda olsa da menzildeyse toplar.
+tokenKit.moonSkip = setmetatable({}, { __mode = "k" })
+tokenKit.moonTries = setmetatable({}, { __mode = "k" })
+tokenKit.moonCount = 0
+tokenKit.moonNext, tokenKit.moonRes = 0, nil
+tokenKit.moonStep = function(root)
+    local now = tick()
+    local tok = nil
+    if now < tokenKit.moonNext then
+        tok = tokenKit.moonRes
+        if tok and (not tok.Parent or (tokenKit.moonSkip[tok] or 0) > now) then
+            tok = nil
+        end
+    else
+        tokenKit.moonNext = now + 0.15
+        local col = workspace:FindFirstChild("Collectibles")
+        local bestD
+        if col then
+            for _, p in ipairs(col:GetChildren()) do
+                if (tokenKit.moonSkip[p] or 0) < now and (p:IsA("BasePart") or p:IsA("Model")) then
+                    local pos = posOf(p)
+                    if pos then
+                        local d = (pos - root.Position).Magnitude
+                        if d <= S.MoonRange and (not bestD or d < bestD) and tokenKit.isMoon(p) then
+                            tok, bestD = p, d
+                        end
+                    end
+                end
+            end
+        end
+        tokenKit.moonRes = tok
+    end
+    if not tok then
+        return false
+    end
+    local p0 = posOf(tok)
+    setStatus(string.format("MOON CHARM: collecting (%d st)...", p0 and (p0 - root.Position).Magnitude or 0))
+    tweenFollow(function()
+        if not tok.Parent then
+            return nil
+        end
+        local p = posOf(tok)
+        return p and (p + Vector3.new(0, 2, 0)) or nil
+    end, 2.5, 12, math.max(60, S.StickerTweenSpeed))
+    if tok.Parent then
+        -- hala duruyor: uzerinde kisa sure dur (dokunma tetiklensin)
+        local hold = tick()
+        while running and S.AutoFarm and tok.Parent and tick() - hold < 0.5 do
+            local r, p = hrp(), posOf(tok)
+            if not r or not p then
+                break
+            end
+            if S.Noclip then
+                env.BSSNoclipUntil = tick() + 0.3
+            end
+            r.CFrame = CFrame.new(p + Vector3.new(0, 1.5, 0)) * (r.CFrame - r.CFrame.Position)
+            r.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+            RunService.Heartbeat:Wait()
+        end
+    end
+    if tok.Parent then
+        tokenKit.moonTries[tok] = (tokenKit.moonTries[tok] or 0) + 1
+        tokenKit.moonSkip[tok] = tick() + (tokenKit.moonTries[tok] >= 2 and 120 or 5)
+    else
+        tokenKit.moonCount = tokenKit.moonCount + 1
+    end
+    return true
+end
+
+-- Yerdeki sticker TOKEN'lari: tarlanin disinda olsa bile menzildeyse gidip toplar.
+tokenKit.stickerCount = 0
+tokenKit.stickerTries = setmetatable({}, { __mode = "k" })
+tokenKit.stickerStep = function(root)
+    local tok = tokenKit.nearestSticker(root.Position, S.StickerTokenRange)
+    if not tok then
+        return false
+    end
+    local p0 = posOf(tok)
+    setStatus(string.format("sticker token: collecting (%d st)...", p0 and (p0 - root.Position).Magnitude or 0))
+    tweenFollow(function()
+        if not tok.Parent then
+            return nil
+        end
+        local p = posOf(tok)
+        return p and (p + Vector3.new(0, 2, 0)) or nil
+    end, 2.5, 12, S.StickerTweenSpeed)
+    if tok.Parent then
+        -- hala duruyor: uzerinde kisa sure dur (dokunma tetiklensin)
+        local hold = tick()
+        while running and S.AutoFarm and tok.Parent and tick() - hold < 0.5 do
+            local r, p = hrp(), posOf(tok)
+            if not r or not p then
+                break
+            end
+            if S.Noclip then
+                env.BSSNoclipUntil = tick() + 0.3
+            end
+            r.CFrame = CFrame.new(p + Vector3.new(0, 1.5, 0)) * (r.CFrame - r.CFrame.Position)
+            r.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+            RunService.Heartbeat:Wait()
+        end
+    end
+    if tok.Parent then
+        -- toplanamadi: kisa sure, ikinci denemeden sonra uzun sure atla
+        tokenKit.stickerTries[tok] = (tokenKit.stickerTries[tok] or 0) + 1
+        tokenKit.stickerSkip[tok] = tick() + (tokenKit.stickerTries[tok] >= 2 and 120 or 5)
+    else
+        tokenKit.stickerCount = tokenKit.stickerCount + 1
+    end
+    return true
+end
+
+-- Rengarenk (renkten algilanan) sticker token'lari: tarla disinda olsa da menzildeyse toplar.
+tokenKit.rainbowCount = 0
+tokenKit.rainbowTries = setmetatable({}, { __mode = "k" })
+tokenKit.rainbowStep = function(root)
+    local tok = tokenKit.nearestRainbow(root.Position, S.RainbowRange)
+    if not tok then
+        return false
+    end
+    local p0 = posOf(tok)
+    setStatus(string.format("rainbow sticker token: collecting (%d st)...", p0 and (p0 - root.Position).Magnitude or 0))
+    tweenFollow(function()
+        if not tok.Parent then
+            return nil
+        end
+        local p = posOf(tok)
+        return p and (p + Vector3.new(0, 2, 0)) or nil
+    end, 2.5, 12, S.StickerTweenSpeed)
+    if tok.Parent then
+        local hold = tick()
+        while running and S.AutoFarm and tok.Parent and tick() - hold < 0.5 do
+            local r, p = hrp(), posOf(tok)
+            if not r or not p then
+                break
+            end
+            if S.Noclip then
+                env.BSSNoclipUntil = tick() + 0.3
+            end
+            r.CFrame = CFrame.new(p + Vector3.new(0, 1.5, 0)) * (r.CFrame - r.CFrame.Position)
+            r.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+            RunService.Heartbeat:Wait()
+        end
+    end
+    if tok.Parent then
+        tokenKit.rainbowTries[tok] = (tokenKit.rainbowTries[tok] or 0) + 1
+        tokenKit.rainbowSkip[tok] = tick() + (tokenKit.rainbowTries[tok] >= 2 and 120 or 5)
+    else
+        tokenKit.rainbowCount = tokenKit.rainbowCount + 1
     end
     return true
 end
@@ -4353,6 +5182,1078 @@ viciousSignal.scanField = function(z)
     return bee, spike
 end
 
+-- ------------------------------------------------------- Sprout grind
+-- Oyunda bir sprout / puffshroom cikinca (nesne gorununce ya da sunucu duyurusu gelince) o
+-- tarlaya gidip PATLAYANA kadar orada farm eder. Ikisinin de bir buyume / polen cubugu var;
+-- tarlada polen toplayinca dolar ve nesne patlar (sprout token sacar, puffshroom baska
+-- tarlalarda yeni puffshroom tohumlari birakabilir: sonraki en yakin olan otomatik secilir).
+-- Vicious / Mondo / firefly gibi olaylar ve kovana donme (canta dolu) once calisir; sprout
+-- sadece "hangi tarlada farm edilecek" kararini degistirir. Ant Field'da sprout cikmaz.
+-- (Yeni top-level local acilmasin diye env.BSSSprout icinde.)
+env.BSSSprout = {
+    set = {}, seen = setmetatable({}, { __mode = "k" }), skip = setmetatable({}, { __mode = "k" }),
+    kind = setmetatable({}, { __mode = "k" }),
+    cur = nil, curZone = nil, startAt = 0, zoneName = nil,
+    hintZone = nil, hintAt = 0, signalAt = 0, scanAt = 0, deepAt = 0,
+    lootUntil = 0, lootZone = nil, popped = 0, label = nil,
+    info = "Sprouts / puffshrooms: off",
+    bad = { "summon", "gui", "planter", "seed", "dispenser", "icon", "bar", "beam", "attach", "shadow", "bean",
+        "spore", "smoke" },
+    badParents = { Toys = true, Planters = true, PlanterModels = true, Honeycombs = true, NPCs = true,
+        Bees = true, Collectibles = true },
+}
+
+-- Sprout / puffshroom grind sirasinda (hedef tarla belli iken) o tarlanin DISINDAKI sticker / sticker
+-- token'lari toplama: hive hub'da dogan sticker karakteri sprout tarlasindan cekip goturmesin.
+-- true donerse o konumdaki pickup yok sayilir.
+env.BSSSprout.blocksPickup = function(pos)
+    local C = env.BSSSprout
+    if not pos or not (S.AutoSprouts or S.AutoPuffshrooms) or not C.zoneName then
+        return false
+    end
+    local z = fieldOfPos(pos)
+    return not (z and z.Name == C.zoneName)
+end
+
+env.BSSSprout.isAntField = function(z)
+    return z ~= nil and string.find(string.lower(z.Name), "^ant%s*field") ~= nil
+end
+
+-- Ad -> tur: "puff" (adinda puffshroom) / "sprout" / nil. (Sadece "puff" degil: duman / efekt
+-- parcaciklari da "puff" icerebilir.)
+env.BSSSprout.kindOf = function(name)
+    if string.find(name, "[Pp][Uu][Ff][Ff][Ss][Hh][Rr][Oo][Oo][Mm]") then
+        return "puff"
+    end
+    if string.find(name, "[Ss][Pp][Rr][Oo][Uu][Tt]") then
+        return "sprout"
+    end
+    return nil
+end
+
+env.BSSSprout.enabled = function(kind)
+    return (kind == "puff" and S.AutoPuffshrooms) or (kind == "sprout" and S.AutoSprouts) or false
+end
+
+-- Nesne takip edilecek bir sprout / puffshroom mu? Tur dondurur (yoksa false).
+-- forced: klasor adindan bilinen tur (ad kontrolu atlanir, ama diger filtreler gecerli)
+env.BSSSprout.isSprout = function(inst, forced)
+    if not (inst:IsA("BasePart") or inst:IsA("Model")) then
+        return false
+    end
+    local n = string.lower(inst.Name)
+    local kind = forced or env.BSSSprout.kindOf(inst.Name)
+    if not kind then
+        return false
+    end
+    for _, w in ipairs(env.BSSSprout.bad) do
+        if string.find(n, w, 1, true) then
+            return false
+        end
+    end
+    if string.find(n, "sticker", 1, true) then
+        return false -- sticker sprout hive hub'da dogar, tarla sprout'u degil
+    end
+    if inst:IsA("BasePart") and inst.Size.Magnitude < 2 then
+        return false
+    end
+    if inOwnArea(inst) then
+        return false
+    end
+    local a = inst.Parent
+    while a and a ~= workspace do
+        if env.BSSSprout.badParents[a.Name] then
+            return false
+        end
+        local an = string.lower(a.Name)
+        if string.find(an, "hive", 1, true) or string.find(an, "hub", 1, true)
+            or string.find(an, "honeycomb", 1, true) then
+            return false -- hive hub alanindaki nesneler sprout sayilmaz
+        end
+        a = a.Parent
+    end
+    return kind
+end
+
+env.BSSSprout.register = function(inst, kind)
+    local C = env.BSSSprout
+    -- ust nesnesi zaten listedeyse (ayni sprout'un parcasi) ekleme
+    local a = inst.Parent
+    while a and a ~= workspace do
+        if C.set[a] then
+            return
+        end
+        a = a.Parent
+    end
+    -- alt parcalari daha once eklendiyse onlari cikar (kapsayici gelince tek hedef kalsin)
+    for k in pairs(C.set) do
+        if k ~= inst and k:IsDescendantOf(inst) then
+            C.set[k] = nil
+        end
+    end
+    if not C.set[inst] then
+        C.set[inst] = tick()
+    end
+    C.kind[inst] = kind or C.kindOf(inst.Name) or "sprout"
+end
+
+connect(workspace.DescendantAdded, function(inst)
+    local C = env.BSSSprout
+    if (S.AutoSprouts or S.AutoPuffshrooms) and C.kindOf(inst.Name) then
+        local kind = C.isSprout(inst)
+        if kind and C.enabled(kind) then
+            C.register(inst, kind)
+        end
+    end
+end)
+
+-- Ucuz tarama: workspace'in cocuklari + "Sprouts" / "Puffshrooms" / "Happenings" / "Particles"
+-- klasorleri (en fazla 2 alt seviye). Sprouts / Puffshrooms klasorundeki her sey o turdur.
+env.BSSSprout.scanTop = function()
+    local C = env.BSSSprout
+    local function look(inst, forced)
+        if C.seen[inst] then
+            return
+        end
+        local kind = forced or C.kindOf(inst.Name)
+        if kind and C.enabled(kind) and C.isSprout(inst, forced) then
+            C.seen[inst] = true
+            C.register(inst, kind)
+        end
+    end
+    local function folderKind(name)
+        local n = string.lower(name)
+        if n == "sprouts" then
+            return "sprout"
+        elseif n == "puffshrooms" then
+            return "puff"
+        end
+        return nil
+    end
+    for _, ch in ipairs(workspace:GetChildren()) do
+        look(ch)
+    end
+    for _, fname in ipairs({ "Sprouts", "Puffshrooms", "Happenings", "Particles" }) do
+        local folder = workspace:FindFirstChild(fname)
+        if folder then
+            local fk = folderKind(fname)
+            for _, ch in ipairs(folder:GetChildren()) do
+                look(ch, fk)
+                if ch:IsA("Folder") then
+                    local subs = ch:GetChildren()
+                    if #subs <= 200 then
+                        local sk = fk or folderKind(ch.Name)
+                        for _, sub in ipairs(subs) do
+                            look(sub, sk)
+                        end
+                    end
+                end
+            end
+        end
+    end
+end
+
+-- Oyunun herhangi bir yazisi: "A Rare Sprout has spawned in the Pine Tree Forest" gibi duyuru
+env.BSSSprout.onText = function(text)
+    local C = env.BSSSprout
+    if not running or not (S.AutoSprouts or S.AutoPuffshrooms) or type(text) ~= "string" or #text > 300 then
+        return
+    end
+    local t = string.lower(text)
+    local kind = C.kindOf(text)
+    if not kind or not C.enabled(kind) then
+        return
+    end
+    -- "Sticker Sprouts are about to spawn in the Hive Hub..." gibi duyurular tarla sprout'u degil:
+    -- hive hub'da dogar, tarlaya gidilmez
+    if string.find(t, "sticker", 1, true) or string.find(t, "hive hub", 1, true)
+        or string.find(t, "hub", 1, true) or string.find(t, "about to", 1, true) then
+        return
+    end
+    for _, w in ipairs({ "summoner", "cooldown", "popped", "burst", "pop!", "next ", "despawn", "available",
+        "ready", "exploded", "defeated", "spores" }) do
+        if string.find(t, w, 1, true) then
+            return
+        end
+    end
+    -- sayac / zamanlayici yazilari bildirim degil
+    if string.find(t, "%d+:%d+") or string.find(t, "%d+%s*min") or string.find(t, "%d+%s*sec")
+        or string.find(t, "%d+%s*hour") then
+        return
+    end
+    local spawnish = false
+    for _, w in ipairs({ "spawn", "appear", "plant", "grow", "arriv", "has come", "found" }) do
+        if string.find(t, w, 1, true) then
+            spawnish = true
+            break
+        end
+    end
+    if not spawnish then
+        return
+    end
+    C.signalAt = tick()
+    C.deepAt, C.scanAt = 0, 0
+    local z = zoneFromText(text)
+    if z and not C.isAntField(z) then
+        C.hintZone, C.hintAt = z, tick()
+    end
+end
+
+-- Her saniye: sprout'lari bul / sec / bitisini izle ve hangi tarlada farm edilecegini guncelle
+env.BSSSprout.update = function()
+    local C = env.BSSSprout
+    if not (S.AutoSprouts or S.AutoPuffshrooms) then
+        C.cur, C.curZone, C.zoneName, C.hintZone = nil, nil, nil, nil
+        C.info = "Sprouts / puffshrooms: off"
+        return
+    end
+    local now = tick()
+    local root = hrp()
+
+    if now >= C.scanAt then
+        C.scanAt = now + 4
+        pcall(C.scanTop)
+    end
+    -- duyuru geldiyse (ya da ozellik yeni acildiysa) workspace'i sinirli derinlikte tara
+    if now - C.signalAt < 60 and now >= C.deepAt then
+        C.deepAt = now + 6
+        pcall(boundedWalk, workspace, 4, 8000, function(d)
+            local kind = C.kindOf(d.Name)
+            if kind and C.enabled(kind) then
+                local k2 = C.isSprout(d)
+                if k2 then
+                    C.register(d, k2)
+                end
+            end
+            return false
+        end)
+    end
+
+    for k in pairs(C.set) do
+        if not k.Parent then
+            C.set[k] = nil
+        end
+    end
+
+    -- aktif sprout: patladi mi / cok uzun surdu mu
+    if C.cur then
+        if not C.cur.Parent then
+            C.popped = C.popped + 1
+            C.lootUntil = now + 8 -- patlayinca tarlaya token sacar: kisa sure orada kal, topla
+            C.lootZone = C.curZone and C.curZone.Name
+            C.cur, C.curZone, C.hintZone = nil, nil, nil
+        elseif not C.enabled(C.kind[C.cur]) then
+            C.cur, C.curZone = nil, nil -- bu tur kapatildi
+        elseif now - C.startAt > math.max(1, C.kind[C.cur] == "puff" and S.PuffGiveUpMin or S.SproutGiveUpMin) * 60 then
+            C.skip[C.cur] = true
+            C.cur, C.curZone, C.hintZone = nil, nil, nil
+        end
+    end
+
+    -- yeni sprout sec: en yakin, bir tarlanin icinde olan (Ant Field degil)
+    if not C.cur then
+        local best, bestD, bestZ
+        for inst in pairs(C.set) do
+            if not C.skip[inst] and C.enabled(C.kind[inst]) then
+                local p = targetPos(inst)
+                local z = p and fieldOfPos(p)
+                if z and not C.isAntField(z) and inField(z, p, 0) and math.abs(p.Y - fieldTop(z)) < 40 then
+                    local d = root and (p - root.Position).Magnitude or 0
+                    if not bestD or d < bestD then
+                        best, bestD, bestZ = inst, d, z
+                    end
+                end
+            end
+        end
+        if best then
+            C.cur, C.curZone, C.startAt = best, bestZ, now
+            C.lootUntil = 0
+        end
+    end
+
+    if C.cur then
+        C.zoneName = C.curZone and C.curZone.Name
+        C.info = string.format("Grinding %s in %s (%d s)", C.cur.Name,
+            C.zoneName or "?", math.floor(now - C.startAt))
+    elseif now < C.lootUntil and C.lootZone then
+        C.zoneName = C.lootZone
+        C.info = "Popped! collecting the drop in " .. C.lootZone
+    elseif C.hintZone and C.hintZone.Parent and now - C.hintAt < 150 then
+        -- duyuru var ama nesne henuz bulunamadi: tarlaya git, orada farm et
+        C.zoneName = C.hintZone.Name
+        C.info = "Announced in " .. C.zoneName .. ", looking for it..."
+    else
+        C.zoneName = nil
+        C.info = "Sprouts / puffshrooms: none found" .. (C.popped > 0 and (" (" .. C.popped .. " popped)") or "")
+    end
+end
+
+task.spawn(function()
+    while running do
+        local ok, err = pcall(env.BSSSprout.update)
+        if not ok then
+            warn("[BSSFarm] sprout: " .. tostring(err))
+        end
+        local C = env.BSSSprout
+        if C.label then
+            C.label.Text = C.info
+        end
+        task.wait(1)
+    end
+end)
+
+env.BSSSprout.debug = function()
+    local C = env.BSSSprout
+    print("[BSSFarm] ---------------- sprout debug ----------------")
+    print("[BSSFarm] AutoSprouts:", tostring(S.AutoSprouts), "| AutoPuffshrooms:", tostring(S.AutoPuffshrooms),
+        "| state:", C.info)
+    print("[BSSFarm] current:", C.cur and C.cur:GetFullName() or "none",
+        "| hint field:", C.hintZone and C.hintZone.Name or "none",
+        "| popped so far:", C.popped)
+    local root = hrp()
+    local shown = 0
+    pcall(boundedWalk, workspace, 5, 12000, function(d)
+        if C.kindOf(d.Name) and (d:IsA("BasePart") or d:IsA("Model") or d:IsA("Folder")) then
+            shown = shown + 1
+            if shown <= 40 then
+                local p = targetPos(d)
+                local z = p and fieldOfPos(p)
+                print("[BSSFarm] sprout candidate:", d.ClassName, d:GetFullName(),
+                    "| accepted:", tostring(C.isSprout(d)), "| tracked:", tostring(C.set[d] ~= nil),
+                    "| field:", z and z.Name or "none",
+                    p and root and string.format("| %.0f st", (p - root.Position).Magnitude) or "")
+            end
+        end
+        return false
+    end)
+    if shown == 0 then
+        print("[BSSFarm] nothing named *sprout* / *puffshroom* is in the workspace right now")
+        print("[BSSFarm] (press this button while a sprout / puffshroom is on the map)")
+    end
+    setStatus("sprout / puffshroom debug printed to the console (F9)")
+end
+
+-- ======================================================== Auto Sprinkler
+-- Tarlaya girince Sprinkler Builder'i (envanterdeki kalici arac) kullanarak sprinkler yerlestirir.
+-- Tarla basina bir kez; tarla degisince / karakter olunce yeniden yerlestirir.
+-- (Yeni top-level local acilmasin diye env.BSSSprinkler icinde.)
+env.BSSSprinkler = { zone = nil, n = 0, tries = 0 }
+
+env.BSSSprinkler.reset = function()
+    local C = env.BSSSprinkler
+    C.zone, C.n, C.tries = nil, 0, 0
+end
+connect(player.CharacterAdded, function()
+    env.BSSSprinkler.reset()
+end)
+
+env.BSSSprinkler.fire = function()
+    local events = RS:FindFirstChild("Events")
+    local r = events and events:FindFirstChild("PlayerActivesCommand")
+    if not r then
+        return false
+    end
+    return (pcall(function() r:FireServer({ Name = "Sprinkler Builder" }) end))
+end
+
+env.BSSSprinkler.offsets = function(n, s)
+    if n <= 1 then
+        return { { 0, 0 } }
+    elseif n == 2 then
+        return { { -s, 0 }, { s, 0 } }
+    elseif n == 3 then
+        return { { -s, -s * 0.6 }, { s, -s * 0.6 }, { 0, s * 0.9 } }
+    elseif n == 4 then
+        return { { -s, -s }, { s, -s }, { -s, s }, { s, s } }
+    end
+    return { { 0, 0 }, { -s, -s }, { s, -s }, { -s, s }, { s, s } }
+end
+
+-- Bir adim: sirada yerlestirilecek sprinkler varsa oraya gidip yerlestirir. Is yaptiysa true doner.
+env.BSSSprinkler.step = function(zone)
+    local C = env.BSSSprinkler
+    if not S.AutoSprinkler then
+        return false
+    end
+    if C.zone ~= zone.Name then
+        C.zone, C.n, C.tries = zone.Name, 0, 0
+    end
+    local want = math.max(1, math.min(5, math.floor(S.SprinklerCount)))
+    if C.n >= want or C.tries >= want * 3 then
+        return false
+    end
+    local o = env.BSSSprinkler.offsets(want, S.SprinklerSpacing)[C.n + 1]
+    local hx = math.max(1, zone.Size.X / 2 - math.max(3, S.FieldMargin))
+    local hz = math.max(1, zone.Size.Z / 2 - math.max(3, S.FieldMargin))
+    local wp = zone.CFrame:PointToWorldSpace(Vector3.new(math.clamp(o[1], -hx, hx), 0, math.clamp(o[2], -hz, hz)))
+    setStatus(string.format("sprinkler %d/%d: moving to the spot...", C.n + 1, want))
+    moveTo(Vector3.new(wp.X, groundY(zone, wp.X, wp.Z) + S.TweenHeight, wp.Z))
+    if not (running and S.AutoFarm) then
+        return true
+    end
+    task.wait(0.6) -- yere insin (cicekin ustunde dururken yerlestirilir)
+    C.tries = C.tries + 1
+    if C.fire() then
+        C.n = C.n + 1
+        setStatus(string.format("sprinkler %d/%d placed", C.n, want))
+    else
+        setStatus("sprinkler: Events.PlayerActivesCommand not found")
+    end
+    task.wait(1.1) -- oyunda 1 sn bekleme suresi var
+    return true
+end
+
+-- ======================================================== Discord webhook
+-- Vicious Bee'den gelen stinger'lari envanter farkindan sayar ve istege bagli her N dakikada
+-- (varsayilan 20) Discord'a rapor yollar. (Yeni top-level local acilmasin diye env.BSSWebhook icinde.)
+env.BSSWebhook = {
+    base = nil, last = nil, lastReport = nil, kills = 0, startAt = tick(), nextAt = 0,
+    info = "Webhook: not configured", label = nil,
+}
+do
+    local WH = env.BSSWebhook
+
+    local function requestFn()
+        if syn and type(syn.request) == "function" then return syn.request end
+        if http and type(http.request) == "function" then return http.request end
+        if type(http_request) == "function" then return http_request end
+        if type(request) == "function" then return request end
+        if fluxus and type(fluxus.request) == "function" then return fluxus.request end
+        return nil
+    end
+
+    WH.validUrl = function(u)
+        u = tostring(u or "")
+        return string.find(u, "^https://discord%.com/api/webhooks/") ~= nil
+            or string.find(u, "^https://discordapp%.com/api/webhooks/") ~= nil
+            or string.find(u, "^https://ptb%.discord%.com/api/webhooks/") ~= nil
+            or string.find(u, "^https://canary%.discord%.com/api/webhooks/") ~= nil
+    end
+
+    WH.send = function(embed, content)
+        if not WH.validUrl(S.WebhookUrl) then
+            WH.info = "Webhook: URL is empty or not a Discord webhook link"
+            return false
+        end
+        local req = requestFn()
+        if not req then
+            WH.info = "Webhook: this executor has no request function"
+            return false
+        end
+        local ok, res = pcall(function()
+            return req({
+                Url = S.WebhookUrl, Method = "POST",
+                Headers = { ["Content-Type"] = "application/json" },
+                Body = HttpService:JSONEncode({
+                    username = "AyzHub", content = content, embeds = embed and { embed } or nil,
+                }),
+            })
+        end)
+        local code = ok and type(res) == "table" and (res.StatusCode or res.status_code) or nil
+        if ok and type(code) == "number" and code >= 200 and code < 300 then
+            WH.info = "Webhook: last message sent at " .. os.date("%H:%M:%S")
+            return true
+        end
+        WH.info = "Webhook: send failed" .. (code and (" (HTTP " .. tostring(code) .. ")") or "")
+        return false
+    end
+
+    local function findKey(t, depth)
+        if type(t) ~= "table" or depth > 2 then
+            return nil
+        end
+        for k, v in pairs(t) do
+            if type(k) == "string" and string.lower(k) == "stinger" and type(v) == "number" then
+                return v
+            end
+        end
+        for _, v in pairs(t) do
+            if type(v) == "table" then
+                local r = findKey(v, depth + 1)
+                if r then
+                    return r
+                end
+            end
+        end
+        return nil
+    end
+
+    -- Envanterdeki Stinger sayisi (oyunun ClientStatCache'inden). Okunamazsa nil.
+    WH.readStatTable = function()
+        local m = RS:FindFirstChild("ClientStatCache")
+        if not m then
+            return nil
+        end
+        local cache = require(m)
+        local st = cache:Get()
+        return type(st) == "table" and st or nil
+    end
+    WH.readStinger = function()
+        local ok, res = pcall(function()
+            local st = WH.readStatTable()
+            if not st then
+                return nil
+            end
+            if type(st.Eggs) == "table" then
+                return findKey(st.Eggs, 0) or 0 -- esya yoksa anahtar da yoktur: 0
+            end
+            return findKey(st, 0)
+        end)
+        return ok and res or nil
+    end
+
+    WH.sample = function()
+        local cur = WH.readStinger()
+        if cur then
+            WH.last = cur
+            if not WH.base then
+                WH.base, WH.lastReport = cur, cur
+            end
+        end
+    end
+
+    WH.report = function()
+        local cur = WH.readStinger()
+        local fields
+        if cur == nil then
+            fields = { { name = "Stingers", value = "Could not read the stinger count", inline = false } }
+        else
+            WH.base = WH.base or cur
+            WH.lastReport = WH.lastReport or cur
+            local secs = math.floor(tick() - WH.startAt)
+            fields = {
+                { name = "Stingers gained (session)", value = tostring(cur - WH.base), inline = true },
+                { name = "Since last report", value = tostring(cur - WH.lastReport), inline = true },
+                { name = "Stingers now", value = tostring(cur), inline = true },
+                { name = "Vicious Bees killed (session)", value = tostring(WH.kills), inline = true },
+                { name = "Running for", value = string.format("%dh %02dm", math.floor(secs / 3600), math.floor(secs % 3600 / 60)), inline = true },
+            }
+        end
+        local ok = WH.send({
+            title = "Stinger report", color = 4676316, fields = fields,
+            footer = { text = player.Name }, timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+        })
+        if ok and cur then
+            WH.lastReport = cur
+            WH.last = cur
+        end
+        return ok
+    end
+
+    WH.test = function()
+        local ok = WH.send({
+            title = "AyzHub webhook test", color = 4676316,
+            description = "If you can read this, the webhook works.",
+            footer = { text = player.Name },
+        })
+        setStatus(ok and "webhook: test message sent" or WH.info)
+    end
+
+    WH.reset = function()
+        WH.sample()
+        WH.base, WH.lastReport, WH.kills, WH.startAt = WH.last, WH.last, 0, tick()
+        setStatus("stinger counter reset")
+    end
+
+    -- farm dongusu bir Vicious Bee'nin oldugunu fark edince cagrilir
+    WH.onKill = function()
+        WH.kills = WH.kills + 1
+        if not (S.WebhookOnKill and WH.validUrl(S.WebhookUrl)) then
+            return
+        end
+        local before = WH.last
+        task.spawn(function()
+            task.wait(25) -- loot'un toplanmasi icin bekle
+            if not running then
+                return
+            end
+            local cur = WH.readStinger()
+            local desc = "Stinger count could not be read"
+            if cur and before then
+                desc = string.format("Stingers from this kill: **+%d** (now %d)", cur - before, cur)
+            end
+            WH.send({
+                title = "Vicious Bee killed", color = 14721072, description = desc,
+                fields = { { name = "Vicious kills (session)", value = tostring(WH.kills), inline = true } },
+                footer = { text = player.Name },
+            })
+            if cur then
+                WH.last = cur
+            end
+        end)
+    end
+
+    WH.summary = function()
+        local lines = { WH.info }
+        if WH.base and WH.last then
+            lines[#lines + 1] = string.format("Stingers: %d now, +%d this session", WH.last, WH.last - WH.base)
+        else
+            lines[#lines + 1] = "Stingers: not readable yet"
+        end
+        lines[#lines + 1] = "Vicious kills seen: " .. WH.kills
+        if S.WebhookReport and WH.nextAt > 0 then
+            lines[#lines + 1] = string.format("Next report in ~%d min", math.max(0, math.ceil((WH.nextAt - tick()) / 60)))
+        end
+        return table.concat(lines, "\n")
+    end
+
+    WH.debug = function()
+        print("[BSSFarm] ---------------- webhook / stinger debug ----------------")
+        print("[BSSFarm] url valid:", tostring(WH.validUrl(S.WebhookUrl)), "| request fn:", tostring(requestFn() ~= nil))
+        local ok, st = pcall(WH.readStatTable)
+        if not ok or not st then
+            print("[BSSFarm] ClientStatCache could not be read:", tostring(st))
+        else
+            local keys = {}
+            for k, v in pairs(st) do
+                keys[#keys + 1] = tostring(k) .. (type(v) == "table" and "{}" or "")
+            end
+            print("[BSSFarm] stat table keys:", table.concat(keys, ", "))
+        end
+        print("[BSSFarm] stinger count:", tostring(WH.readStinger()), "| base:", tostring(WH.base), "| kills:", WH.kills)
+        setStatus("webhook debug printed to the console (F9)")
+    end
+
+    task.spawn(function()
+        while running do
+            pcall(WH.sample)
+            if S.WebhookReport and WH.validUrl(S.WebhookUrl) then
+                if WH.nextAt == 0 then
+                    WH.nextAt = tick() + math.max(1, S.WebhookMinutes) * 60
+                end
+                if tick() >= WH.nextAt then
+                    WH.nextAt = tick() + math.max(1, S.WebhookMinutes) * 60
+                    pcall(WH.report)
+                end
+            else
+                WH.nextAt = 0
+            end
+            if WH.label then
+                WH.label.Text = WH.summary()
+            end
+            task.wait(10)
+        end
+    end)
+end
+
+-- ======================================================== Farm Blooms
+-- Tarlada beliren Bloom'lari bulur, secili renklerdekine gidip patlatir ve (secili renkteki)
+-- Bloom Petal'lerini toplar. Renk: nesnenin adindan, yoksa rengine bakilarak anlasilir.
+-- (Yeni top-level local acilmasin diye env.BSSBloom icinde.)
+env.BSSBloom = {
+    set = {}, skip = setmetatable({}, { __mode = "k" }), petalSkip = setmetatable({}, { __mode = "k" }),
+    petalTries = setmetatable({}, { __mode = "k" }), colCache = setmetatable({}, { __mode = "k" }),
+    cur = nil, curZone = nil, startAt = 0, zoneName = nil, lootUntil = 0, lootZone = nil, popped = 0,
+    deepAt = 0, pNext = 0, pRes = nil, label = nil, info = "Blooms: off",
+    COLORS = { "Black", "Gray", "Yellow", "White", "Pink", "Red", "Scarlet", "Cyan", "Violet", "Merrygold", "Green" },
+    RGB = {
+        Black = { 25, 25, 28 }, Gray = { 128, 128, 134 }, Yellow = { 250, 215, 40 }, White = { 245, 245, 245 },
+        Pink = { 255, 150, 200 }, Red = { 215, 45, 45 }, Scarlet = { 150, 15, 35 }, Cyan = { 50, 210, 235 },
+        Violet = { 150, 70, 220 }, Merrygold = { 245, 170, 30 }, Green = { 60, 190, 70 },
+    },
+    badParents = { Toys = true, Planters = true, PlanterModels = true, Honeycombs = true, NPCs = true,
+        Bees = true, Collectibles = true,
+        -- yanlis algilananlar: dukkanlar, dekorlar, event klasorleri (Brick Blooms vs.)
+        Shops = true, Decorations = true, Happenings = true },
+    badWords = { "shaker", "petal", "gui", "icon", "bar", "beam", "attach", "shadow", "summon",
+        "shuriken", "shop", "brick", "decoration" },
+    -- Petal olarak sayilmayacak isimler (Petal Shop, PetalShuriken, Petal Wand modeli vs.)
+    badPetalWords = { "shuriken", "shop", "wand", "brick", "decoration", "shaker", "gui", "icon", "beam", "attach", "shadow" },
+    -- Ustlerinden biri bu kelimeleri iceriyorsa (ornegin "Petal Shop" altindaki her sey) yok sayilir
+    badAncestorWords = { "shop", "shuriken", "brick", "decoration" },
+}
+
+-- inst'in kendisi ya da ustlerinden biri yasakli klasor / isim mi? (Shops, Decorations, Happenings, "* Shop" ...)
+env.BSSBloom.badPath = function(inst)
+    local C = env.BSSBloom
+    local a = inst
+    while a and a ~= workspace do
+        if C.badParents[a.Name] then
+            return true
+        end
+        local ln = string.lower(a.Name)
+        for _, w in ipairs(C.badAncestorWords) do
+            if string.find(ln, w, 1, true) then
+                return true
+            end
+        end
+        a = a.Parent
+    end
+    return false
+end
+
+-- Gercek bir Bloom Petal mi? (ismi "petal" iceren HER SEY degil)
+env.BSSBloom.isPetal = function(inst)
+    local C = env.BSSBloom
+    if not (inst:IsA("BasePart") or inst:IsA("Model")) then
+        return false
+    end
+    local n = string.lower(inst.Name)
+    if not string.find(n, "petal", 1, true) then
+        return false
+    end
+    for _, w in ipairs(C.badPetalWords) do
+        if string.find(n, w, 1, true) then
+            return false
+        end
+    end
+    local a = inst.Parent
+    while a and a ~= workspace do
+        if C.badParents[a.Name] and a.Name ~= "Collectibles" then
+            return false
+        end
+        local ln = string.lower(a.Name)
+        for _, w in ipairs(C.badAncestorWords) do
+            if string.find(ln, w, 1, true) then
+                return false
+            end
+        end
+        a = a.Parent
+    end
+    -- sadece Collectibles / Particles icindeki petal'ler gercek (Shops, Decorations, workspace koku vs. degil)
+    local par = inst.Parent
+    if not par or (par.Name ~= "Collectibles" and par.Name ~= "Particles") then
+        return false
+    end
+    return true
+end
+
+-- Auto farm'in o an kastigi tarla (bloom'un kendi tarla secimi haric): sprout > quest > secili tarla
+env.BSSBloom.baseFieldName = function()
+    local sp = env.BSSSprout
+    if (S.AutoSprouts or S.AutoPuffshrooms) and sp and sp.zoneName then
+        return sp.zoneName
+    end
+    if S.PolarQuest and S.QuestFarmFields and questState.field then
+        return questState.field
+    end
+    return S.Field
+end
+
+env.BSSBloom.reset = function()
+    local C = env.BSSBloom
+    C.cur, C.curZone, C.zoneName = nil, nil, nil
+    C.deepAt = 0
+end
+
+-- Bloom / Petal'in rengi: once ad / ozellik, sonra gorunen renk (belirsizse nil)
+env.BSSBloom.colorOf = function(inst)
+    local C = env.BSSBloom
+    local cached = C.colCache[inst]
+    if cached ~= nil then
+        return cached or nil
+    end
+    local found
+    local function byText(t)
+        t = string.lower(t)
+        for _, c in ipairs(C.COLORS) do
+            if string.find(t, string.lower(c), 1, true) then
+                return c
+            end
+        end
+        return nil
+    end
+    found = byText(inst.Name)
+    if not found then
+        pcall(function()
+            for _, v in pairs(inst:GetAttributes()) do
+                if type(v) == "string" then
+                    found = found or byText(v)
+                end
+            end
+        end)
+    end
+    if not found then
+        local part = inst:IsA("BasePart") and inst or inst:FindFirstChildWhichIsA("BasePart", true)
+        if part then
+            local col = part.Color
+            local r, g, b = col.R * 255, col.G * 255, col.B * 255
+            local bestD
+            for _, c in ipairs(C.COLORS) do
+                local v = C.RGB[c]
+                local d = math.sqrt((r - v[1]) ^ 2 + (g - v[2]) ^ 2 + (b - v[3]) ^ 2)
+                if not bestD or d < bestD then
+                    found, bestD = c, d
+                end
+            end
+            if bestD and bestD > 70 then
+                found = nil
+            end
+        end
+    end
+    C.colCache[inst] = found or false
+    return found
+end
+
+env.BSSBloom.allowed = function(color)
+    if color == nil then
+        return S.BloomOther ~= false
+    end
+    return S["Bloom" .. color] ~= false
+end
+
+env.BSSBloom.isBloom = function(inst)
+    local C = env.BSSBloom
+    if not (inst:IsA("BasePart") or inst:IsA("Model")) then
+        return false
+    end
+    local n = string.lower(inst.Name)
+    if not string.find(n, "bloom", 1, true) then
+        return false
+    end
+    for _, w in ipairs(C.badWords) do
+        if string.find(n, w, 1, true) then
+            return false
+        end
+    end
+    if inst:IsA("BasePart") and inst.Size.Magnitude < 1.5 then
+        return false
+    end
+    if inOwnArea(inst) then
+        return false
+    end
+    if C.badPath(inst) then
+        return false
+    end
+    return true
+end
+
+env.BSSBloom.register = function(inst)
+    local C = env.BSSBloom
+    local a = inst.Parent
+    while a and a ~= workspace do
+        if C.set[a] then
+            return
+        end
+        a = a.Parent
+    end
+    for k in pairs(C.set) do
+        if k ~= inst and k:IsDescendantOf(inst) then
+            C.set[k] = nil
+        end
+    end
+    if not C.set[inst] then
+        C.set[inst] = tick()
+    end
+end
+
+connect(workspace.DescendantAdded, function(inst)
+    local C = env.BSSBloom
+    if S.FarmBlooms and string.find(string.lower(inst.Name), "bloom", 1, true) and C.isBloom(inst) then
+        C.register(inst)
+    end
+end)
+
+-- Her saniye: bloom'lari bul / sec / patlamasini izle; hangi tarlada farm edilecegini guncelle
+env.BSSBloom.update = function()
+    local C = env.BSSBloom
+    if not S.FarmBlooms then
+        C.cur, C.curZone, C.zoneName = nil, nil, nil
+        C.info = "Blooms: off"
+        return
+    end
+    local now = tick()
+    local root = hrp()
+    if now >= C.deepAt then
+        C.deepAt = now + 60
+        pcall(boundedWalk, workspace, 4, 6000, function(d)
+            if string.find(string.lower(d.Name), "bloom", 1, true) and C.isBloom(d) then
+                C.register(d)
+            end
+            return false
+        end)
+    end
+    for k in pairs(C.set) do
+        if not k.Parent or C.badPath(k) then
+            C.set[k] = nil
+        end
+    end
+    local only = S.BloomOnlyFarmField
+    local baseName = only and C.baseFieldName() or nil
+    if C.cur and only and (not C.curZone or C.curZone.Name ~= baseName) then
+        C.cur, C.curZone = nil, nil -- hedef farm tarlasinin disinda kaldi: birak
+    end
+    if C.cur then
+        if not C.cur.Parent then
+            C.popped = C.popped + 1
+            C.lootUntil = now + 8 -- petal'ler dusene kadar tarlada kal
+            C.lootZone = C.curZone and C.curZone.Name
+            C.cur, C.curZone = nil, nil
+        elseif now - C.startAt > math.max(10, S.BloomGiveUpSec) then
+            C.skip[C.cur] = true
+            C.cur, C.curZone = nil, nil
+        end
+    end
+    if not C.cur then
+        local best, bestD, bestZ
+        for inst in pairs(C.set) do
+            if not C.skip[inst] and C.allowed(C.colorOf(inst)) then
+                local p = targetPos(inst)
+                local z = p and fieldOfPos(p)
+                if z and (not only or z.Name == baseName) and not (env.BSSSprout and env.BSSSprout.isAntField(z))
+                    and inField(z, p, 0) and math.abs(p.Y - fieldTop(z)) < 40 then
+                    local d = root and (p - root.Position).Magnitude or 0
+                    if not bestD or d < bestD then
+                        best, bestD, bestZ = inst, d, z
+                    end
+                end
+            end
+        end
+        if best then
+            C.cur, C.curZone, C.startAt = best, bestZ, now
+            C.lootUntil = 0
+        end
+    end
+    if C.cur then
+        -- "sadece farm tarlasi" aciksa tarla degistirilmez (zoneName hep nil kalir)
+        C.zoneName = (not only) and C.curZone and C.curZone.Name or nil
+        C.info = string.format("Popping %s bloom in %s (%d s)", C.colorOf(C.cur) or "?",
+            C.curZone and C.curZone.Name or "?", math.floor(now - C.startAt))
+    elseif now < C.lootUntil and C.lootZone and not only then
+        C.zoneName = C.lootZone
+        C.info = "Popped! collecting petals in " .. C.lootZone
+    else
+        C.zoneName = nil
+        C.info = (only and ("Blooms: none in " .. tostring(baseName)) or "Blooms: none found")
+            .. (C.popped > 0 and (" (" .. C.popped .. " popped)") or "")
+    end
+end
+
+task.spawn(function()
+    while running do
+        local ok, err = pcall(env.BSSBloom.update)
+        if not ok then
+            warn("[BSSFarm] bloom: " .. tostring(err))
+        end
+        local C = env.BSSBloom
+        if C.label then
+            C.label.Text = C.info
+        end
+        task.wait(1)
+    end
+end)
+
+-- Secili olmayan renkteki petal'ler normal token toplamada da atlanir
+env.BSSBloom.skipToken = function(p)
+    if not S.FarmBlooms then
+        return false
+    end
+    if not string.find(string.lower(p.Name), "petal", 1, true) then
+        return false
+    end
+    if not env.BSSBloom.isPetal(p) then
+        return false -- PetalShuriken / Petal Shop gibi sahte petal'lere karisma
+    end
+    return not env.BSSBloom.allowed(env.BSSBloom.colorOf(p))
+end
+
+-- Menzildeki en yakin SECILI renkte petal'e gidip toplar. Is yaptiysa true.
+env.BSSBloom.petalStep = function(root)
+    local C = env.BSSBloom
+    local now = tick()
+    local tok = nil
+    if now < C.pNext then
+        tok = C.pRes
+        if tok and (not tok.Parent or (C.petalSkip[tok] or 0) > now) then
+            tok = nil
+        end
+    else
+        C.pNext = now + 0.15
+        local bestD
+        for _, fname in ipairs({ "Collectibles", "Particles" }) do
+            local folder = workspace:FindFirstChild(fname)
+            if folder then
+                for _, p in ipairs(folder:GetChildren()) do
+                    if (C.petalSkip[p] or 0) < now and C.isPetal(p) then
+                        local pos = posOf(p)
+                        if pos then
+                            local d = (pos - root.Position).Magnitude
+                            if d <= S.BloomPetalRange and (not bestD or d < bestD) and C.allowed(C.colorOf(p)) then
+                                tok, bestD = p, d
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        C.pRes = tok
+    end
+    if not tok then
+        return false
+    end
+    setStatus(string.format("bloom petal (%s): collecting...", C.colorOf(tok) or "?"))
+    tweenFollow(function()
+        if not tok.Parent then
+            return nil
+        end
+        local p = posOf(tok)
+        return p and (p + Vector3.new(0, 2, 0)) or nil
+    end, 2.5, 6, math.max(60, S.TokenTweenSpeed))
+    if tok.Parent then
+        C.petalTries[tok] = (C.petalTries[tok] or 0) + 1
+        C.petalSkip[tok] = tick() + (C.petalTries[tok] >= 2 and 60 or 3)
+    end
+    return true
+end
+
+-- Hedef bloom bu tarladaysa uzerine git / yaninda dur (bee'ler ve alet patlatsin). Is yaptiysa true.
+env.BSSBloom.popStep = function(zone, root)
+    local C = env.BSSBloom
+    if not (S.FarmBlooms and C.cur and C.cur.Parent and C.curZone == zone) then
+        return false
+    end
+    local p = targetPos(C.cur)
+    if not p then
+        return false
+    end
+    if flat(root.Position, clampToField(zone, p)) > 5 then
+        setStatus("bloom: going to the " .. (C.colorOf(C.cur) or "") .. " bloom in " .. zone.Name .. "...")
+        tweenFollow(function()
+            local q = C.cur and C.cur.Parent and targetPos(C.cur)
+            return q and clampToField(zone, q) or nil
+        end, 3, 4, S.MoveSpeed)
+    else
+        setStatus("bloom: popping the " .. (C.colorOf(C.cur) or "") .. " bloom...")
+        task.wait(0.25)
+    end
+    return true
+end
+
+env.BSSBloom.debug = function()
+    local C = env.BSSBloom
+    print("[BSSFarm] ---------------- bloom debug ----------------")
+    print("[BSSFarm] FarmBlooms:", tostring(S.FarmBlooms), "| state:", C.info, "| popped:", C.popped)
+    local root = hrp()
+    local shown, ignored = 0, 0
+    pcall(boundedWalk, workspace, 5, 12000, function(d)
+        local n = string.lower(d.Name)
+        if (string.find(n, "bloom", 1, true) or string.find(n, "petal", 1, true))
+            and (d:IsA("BasePart") or d:IsA("Model") or d:IsA("Folder")) then
+            if C.badPath(d) or (not C.isBloom(d) and not C.isPetal(d)) then
+                ignored = ignored + 1 -- sahte eslesme (shop / dekor / event / shuriken): listeleme
+                return false
+            end
+            shown = shown + 1
+            if shown <= 40 then
+                local p = targetPos(d)
+                local z = p and fieldOfPos(p)
+                local col = C.colorOf(d)
+                print("[BSSFarm] bloom/petal candidate:", d.ClassName, d:GetFullName(),
+                    "| bloom:", tostring(C.isBloom(d)), "| petal:", tostring(C.isPetal(d)), "| tracked:", tostring(C.set[d] ~= nil),
+                    "| color:", col or "unknown", "| allowed:", tostring(C.allowed(col)),
+                    "| field:", z and z.Name or "none",
+                    p and root and string.format("| %.0f st", (p - root.Position).Magnitude) or "")
+            end
+        end
+        return false
+    end)
+    if shown == 0 then
+        print("[BSSFarm] no real bloom / petal is in the workspace right now")
+    end
+    print("[BSSFarm] ignored false positives (shop / decoration / event / shuriken):", ignored)
+    setStatus("bloom debug printed to the console (F9)")
+end
+
 local function farmStep()
     local h, root = hum(), hrp()
     if not h or not root or h.Health <= 0 then
@@ -4393,6 +6294,9 @@ local function farmStep()
             if fs.lastPos and flat(root.Position, fs.lastPos) < 70 then
                 fs.lootUntil = tick() + 10
                 viciousSignal.killedAt = tick()
+                if env.BSSWebhook and env.BSSWebhook.onKill then
+                    pcall(env.BSSWebhook.onKill)
+                end
                 for _, key in ipairs(PATROL_KEYS) do
                     patrolVisited[key] = true
                 end
@@ -4467,8 +6371,8 @@ local function farmStep()
         end
 
         -- Gece: Vicious'in cikabilecegi tarlalari tek tek gez (her gece bir kez)
-        -- (canta doluysa once kovana donulur; arama turu sonra devam eder)
-        if S.ViciousPatrol and (nightInfo.night or S.ViciousPatrolAlways) and not bagFull then
+        -- (EventPriority aciksa canta dolu olsa bile tur devam eder; kapaliysa once kovana donulur)
+        if S.ViciousPatrol and (nightInfo.night or S.ViciousPatrolAlways) and (S.EventPriority or not bagFull) then
             local pz, pkey = nextPatrolZone(root.Position)
             if not pz then
                 -- Tur bitti. Vicious gece herhangi bir anda dogabilir; bu yuzden bir sure farm
@@ -4547,7 +6451,8 @@ local function farmStep()
     end
 
     -- Vicious yoksa: canta doluysa kovana don ve polen donustur
-    if bagFull then
+    -- (EventPriority aciksa: aktif bir firefly isi varsa once o bitirilir, sonra donulur)
+    if bagFull and not (S.EventPriority and fireflyBusy()) then
         convert()
         return
     end
@@ -4559,6 +6464,14 @@ local function farmStep()
             nextDispenserAt = tick() + 10
         end
         return
+    end
+
+    if S.AutoWealthClock and tick() >= env.BSSWealth.nextAt then
+        env.BSSWealth.claim() -- hareket yok: farm akisini kesmeden devam edilir
+    end
+
+    if S.AutoBoosters and tick() >= env.BSSBooster.nextAt then
+        env.BSSBooster.use() -- hareket yok: farm akisini kesmeden devam edilir
     end
 
     if S.PolarQuest and (S.QuestAutoAccept or S.QuestAutoTurnIn) and tick() >= questState.nextVisit then
@@ -4768,8 +6681,27 @@ local function farmStep()
 
     end
 
+    -- Moon Charm: her seyden once
+    if S.PrioMoonCharm and tokenKit.moonStep(root) then
+        return
+    end
+
+    -- Yerdeki sticker TOKEN'lerini topla (tarla disinda olsa da), sonra farma don
+    if S.StickerTokens and tokenKit.stickerStep(root) then
+        return
+    end
+
+    -- Rengarenk (renkten algilanan) sticker token'lari topla
+    if S.RainbowTokens and tokenKit.rainbowStep(root) then
+        return
+    end
+
     -- Etraftaki sticker'lari topla (menzilde varsa), sonra farma don
     if S.AutoStickers and stickerKit.step(root) then
+        return
+    end
+
+    if S.FarmBlooms and env.BSSBloom.petalStep(root) then
         return
     end
 
@@ -4790,13 +6722,25 @@ local function farmStep()
         return
     end
 
+    if env.BSSSprinkler.step(zone) then
+        return
+    end
+
     local pct = cap > 0 and math.floor(pollen / cap * 100) or 0
-    local tag = (zone.Name ~= S.Field) and "  (quest)" or ""
+    local tag = ""
+    if zone.Name ~= S.Field then
+        tag = ((S.AutoSprouts or S.AutoPuffshrooms) and env.BSSSprout.zoneName == zone.Name) and "  (sprout)"
+            or (S.FarmBlooms and env.BSSBloom.zoneName == zone.Name) and "  (bloom)" or "  (quest)"
+    end
     setStatus(string.format("farming %s%s   bag %d%%", zone.Name, tag, pct))
 
     local pick = nearestCollectible(center, radius + S.TokenRange, zone)
     if pick then
         chaseToken(pick, zone)
+        return
+    end
+
+    if env.BSSBloom.popStep(zone, root) then
         return
     end
 
@@ -4931,20 +6875,23 @@ end
 -- ------------------------------------------------------------------ arayuz
 
 local THEME = {
-    bg = Color3.fromRGB(17, 18, 24),
-    panel = Color3.fromRGB(27, 29, 39),
-    panel2 = Color3.fromRGB(38, 41, 56),
-    accent = Color3.fromRGB(255, 190, 60),
-    accentDim = Color3.fromRGB(88, 72, 34),
-    on = Color3.fromRGB(46, 204, 113),
-    off = Color3.fromRGB(70, 74, 92),
-    text = Color3.fromRGB(235, 236, 242),
-    sub = Color3.fromRGB(145, 150, 170),
-    danger = Color3.fromRGB(231, 76, 90),
-    dark = Color3.fromRGB(20, 20, 26),
+    bg = Color3.fromRGB(32, 32, 36),
+    side = Color3.fromRGB(26, 26, 30),
+    panel = Color3.fromRGB(42, 42, 47),     -- bolum govdesi
+    panel2 = Color3.fromRGB(62, 62, 69),    -- dugmeler / acilir liste basligi
+    header = Color3.fromRGB(52, 52, 58),    -- bolum basligi
+    title = Color3.fromRGB(33, 72, 138),    -- mavi baslik cubugu
+    accent = Color3.fromRGB(70, 122, 220),
+    accentDim = Color3.fromRGB(38, 56, 104),
+    on = Color3.fromRGB(70, 122, 220),      -- isaretli kutu
+    off = Color3.fromRGB(38, 48, 92),       -- bos kutu (koyu lacivert)
+    boxLine = Color3.fromRGB(80, 98, 170),
+    text = Color3.fromRGB(240, 240, 244),
+    sub = Color3.fromRGB(141, 144, 160),
+    danger = Color3.fromRGB(215, 70, 80),
+    dark = Color3.fromRGB(20, 20, 24),
 }
-local W, H = 640, 360 -- yatay (landscape) pencere
-local LEFT = Enum.TextXAlignment.Left
+local W, H = 700, 390 -- yatay (landscape) pencere
 
 local function new(class, props, parent)
     local o = Instance.new(class)
@@ -4961,10 +6908,9 @@ local gui = new("ScreenGui", {
     Name = "BSSFarm", ResetOnSpawn = false,
     ZIndexBehavior = Enum.ZIndexBehavior.Sibling, DisplayOrder = 50,
 })
-local okParent = pcall(function()
+if not pcall(function()
     gui.Parent = (gethui and gethui()) or game:GetService("CoreGui")
-end)
-if not okParent or not gui.Parent then
+end) or not gui.Parent then
     gui.Parent = player:WaitForChild("PlayerGui")
 end
 
@@ -4972,93 +6918,126 @@ local window = new("Frame", {
     Name = "Window", Size = UDim2.fromOffset(W, H), Position = UDim2.fromOffset(40, 70),
     BackgroundColor3 = THEME.bg, BorderSizePixel = 0, ClipsDescendants = true,
 }, gui)
-round(window, 12)
-new("UIStroke", { Color = THEME.panel2, Thickness = 1.5 }, window)
+round(window, 6)
+new("UIStroke", { Color = Color3.fromRGB(64, 64, 72), Thickness = 1 }, window)
 local uiScale = new("UIScale", { Scale = S.UIScale }, window)
 
--- ust cubuk ---------------------------------------------------------
+-- ust cubuk (mavi) -----------------------------------------------------
 local topbar = new("Frame", {
-    Size = UDim2.new(1, 0, 0, 40), BackgroundColor3 = THEME.panel, BorderSizePixel = 0, Active = true,
+    Size = UDim2.new(1, 0, 0, 30), BackgroundColor3 = THEME.title, BorderSizePixel = 0, Active = true,
 }, window)
-round(topbar, 12)
-new("Frame", {
-    Size = UDim2.new(1, 0, 0, 12), Position = UDim2.new(0, 0, 1, -12),
-    BackgroundColor3 = THEME.panel, BorderSizePixel = 0,
-}, topbar)
-new("Frame", { -- sol aksan seridi
-    Size = UDim2.fromOffset(4, 18), Position = UDim2.fromOffset(12, 11),
-    BackgroundColor3 = THEME.accent, BorderSizePixel = 0,
-}, topbar)
 new("TextLabel", {
-    BackgroundTransparency = 1, Position = UDim2.fromOffset(24, 0), Size = UDim2.new(1, -120, 1, 0),
-    Text = "AyzHub", TextColor3 = THEME.text, Font = Enum.Font.GothamBold,
-    TextSize = 15, TextXAlignment = LEFT,
+    BackgroundTransparency = 1, Position = UDim2.fromOffset(12, 0), Size = UDim2.new(1, -100, 1, 0),
+    Text = "AyzHub v1.0", TextColor3 = Color3.new(1, 1, 1), Font = Enum.Font.GothamBold,
+    TextSize = 14, TextXAlignment = Enum.TextXAlignment.Left,
 }, topbar)
 
+local minBtn, closeBtn
+do
 local function iconButton(text, xOff, color)
     local b = new("TextButton", {
-        Size = UDim2.fromOffset(28, 28), Position = UDim2.new(1, xOff, 0.5, -14),
-        BackgroundColor3 = THEME.panel2, TextColor3 = color, Text = text,
-        Font = Enum.Font.GothamBold, TextSize = 16, BorderSizePixel = 0,
+        Size = UDim2.fromOffset(22, 20), Position = UDim2.new(1, xOff, 0.5, -10),
+        BackgroundColor3 = Color3.fromRGB(24, 54, 108), TextColor3 = color, Text = text,
+        Font = Enum.Font.GothamBold, TextSize = 14, BorderSizePixel = 0,
     }, topbar)
-    round(b, 7)
+    round(b, 4)
     return b
 end
-local minBtn = iconButton("-", -70, THEME.text)
-local closeBtn = iconButton("x", -38, THEME.danger)
+minBtn = iconButton("-", -54, Color3.new(1, 1, 1))
+closeBtn = iconButton("x", -28, Color3.fromRGB(255, 140, 150))
+end
 
--- sekmeler ----------------------------------------------------------
-local TAB_NAMES = { "Farm", "Tokens", "Firefly", "Quest", "Extras", "UI" }
--- Yatay yerlesim: solda dikey sekme sutunu (126 px), sagda icerik, altta 44 px'lik durum cubugu
+-- sol menu (sekmeler + arama) -----------------------------------------
 local tabBar = new("Frame", {
-    Position = UDim2.fromOffset(0, 46), Size = UDim2.new(0, 126, 1, -90), BackgroundTransparency = 1,
+    Position = UDim2.fromOffset(0, 30), Size = UDim2.new(0, 116, 1, -(30 + 34)),
+    BackgroundColor3 = THEME.side, BorderSizePixel = 0,
 }, window)
 
 local body = new("Frame", {
-    Position = UDim2.fromOffset(0, 46), Size = UDim2.new(1, 0, 1, -46), BackgroundTransparency = 1,
+    Position = UDim2.fromOffset(0, 30), Size = UDim2.new(1, 0, 1, -30), BackgroundTransparency = 1,
 }, window)
+
+local tabs, refreshers = {}, {}
+local selectTab, useColumn, section, toggle, stepper, dropdown, button, infoBox, textbox
+do -- (200 local degisken siniri icin: yardimcilar bu blokta kalir)
 local pages = new("Frame", {
-    Position = UDim2.fromOffset(130, 0), Size = UDim2.new(1, -130, 1, -44),
+    Position = UDim2.fromOffset(116 + 6, 6), Size = UDim2.new(1, -(116 + 12), 1, -(34 + 12)),
     BackgroundTransparency = 1, ClipsDescendants = true,
 }, body)
+local TAB_DEFS = {
+    { "Farm", "🌾", "Farming" }, { "Tokens", "✨", "Tokens" }, { "Firefly", "🔥", "Firefly" },
+    { "Quest", "📜", "Quests" }, { "Webhook", "🔗", "Webhook" }, { "Extras", "⚔", "Extras" }, { "UI", "⚙", "Config" },
+}
+local ST = { tabButtons = {}, tabLabels = {}, widgets = {}, groups = {}, cur = nil, searching = false }
 
-local tabs, tabButtons = {}, {}
-local refreshers = {}
+local function makeColumn(parent)
+    local f = new("ScrollingFrame", {
+        Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, BorderSizePixel = 0,
+        ScrollBarThickness = 3, ScrollBarImageColor3 = THEME.accent, CanvasSize = UDim2.new(),
+        AutomaticCanvasSize = Enum.AutomaticSize.Y,
+    }, parent)
+    new("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }, f)
+    new("UIPadding", {
+        PaddingTop = UDim.new(0, 2), PaddingBottom = UDim.new(0, 8),
+        PaddingLeft = UDim.new(0, 2), PaddingRight = UDim.new(0, 6),
+    }, f)
+    return f
+end
 
 local function makePage(name)
-    local page = new("ScrollingFrame", {
-        Name = name .. "Tab", Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1,
-        BorderSizePixel = 0, ScrollBarThickness = 3, ScrollBarImageColor3 = THEME.accent,
-        CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y, Visible = false,
+    local holder = new("Frame", {
+        Name = name .. "Tab", Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Visible = false,
     }, pages)
-    new("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }, page)
-    new("UIPadding", {
-        PaddingTop = UDim.new(0, 4), PaddingBottom = UDim.new(0, 10),
-        PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 12),
-    }, page)
-    return { frame = page, order = 0 }
+    local left = makeColumn(holder)
+    return { holder = holder, left = left, right = nil, frame = left, order = 0, container = nil, group = nil, nsec = {} }
 end
 
-local function selectTab(name)
+-- Sonraki widget'lar sag / sol sutuna eklensin (sag sutun ilk kullanimda olusur)
+function useColumn(tab, which)
+    if which == "right" then
+        if not tab.right then
+            tab.left.Size = UDim2.new(0.58, -4, 1, 0)
+            tab.right = makeColumn(tab.holder)
+            tab.right.Size = UDim2.new(0.42, -4, 1, 0)
+            tab.right.Position = UDim2.new(0.58, 4, 0, 0)
+        end
+        tab.frame = tab.right
+    else
+        tab.frame = tab.left
+    end
+    tab.container, tab.group = nil, nil
+end
+
+function selectTab(name)
+    ST.cur = name
     for n, t in pairs(tabs) do
-        t.frame.Visible = (n == name)
+        t.holder.Visible = (n == name)
     end
-    for n, b in pairs(tabButtons) do
+    for n, b in pairs(ST.tabButtons) do
         local active = (n == name)
-        b.BackgroundColor3 = active and THEME.accent or THEME.panel
-        b.TextColor3 = active and THEME.dark or THEME.sub
+        b.BackgroundColor3 = active and Color3.fromRGB(64, 64, 72) or THEME.side
+        ST.tabLabels[n].TextColor3 = active and THEME.text or THEME.sub
     end
 end
 
-for i, name in ipairs(TAB_NAMES) do
+for i, def in ipairs(TAB_DEFS) do
+    local name = def[1]
     tabs[name] = makePage(name)
     local b = new("TextButton", {
-        Position = UDim2.fromOffset(8, 2 + (i - 1) * 34), Size = UDim2.fromOffset(110, 28),
-        BackgroundColor3 = THEME.panel, TextColor3 = THEME.sub, Text = name,
-        Font = Enum.Font.GothamBold, TextSize = 12, BorderSizePixel = 0, AutoButtonColor = false,
+        Position = UDim2.fromOffset(8, 42 + (i - 1) * 34), Size = UDim2.new(1, -16, 0, 30),
+        BackgroundColor3 = THEME.side, Text = "", BorderSizePixel = 0, AutoButtonColor = false,
     }, tabBar)
-    round(b, 7)
-    tabButtons[name] = b
+    round(b, 4)
+    new("TextLabel", {
+        BackgroundTransparency = 1, Position = UDim2.fromOffset(6, 0), Size = UDim2.fromOffset(22, 30),
+        Text = def[2], TextColor3 = THEME.text, Font = Enum.Font.Gotham, TextSize = 13,
+    }, b)
+    ST.tabLabels[name] = new("TextLabel", {
+        BackgroundTransparency = 1, Position = UDim2.fromOffset(32, 0), Size = UDim2.new(1, -34, 1, 0),
+        Text = def[3], TextColor3 = THEME.sub, Font = Enum.Font.GothamBold,
+        TextSize = 12, TextXAlignment = Enum.TextXAlignment.Left,
+    }, b)
+    ST.tabButtons[name] = b
     connect(b.MouseButton1Click, function() selectTab(name) end)
 end
 
@@ -5068,91 +7047,198 @@ local function nextOrder(tab)
     return tab.order
 end
 
-local function row(tab, height)
-    local r = new("Frame", {
-        Size = UDim2.new(1, 0, 0, height), BackgroundColor3 = THEME.panel,
-        BorderSizePixel = 0, LayoutOrder = nextOrder(tab),
-    }, tab.frame)
-    round(r, 8)
-    return r
+local function host(tab)
+    return tab.container or tab.frame
 end
 
-local function rowTexts(r, text, hint, rightPad)
-    new("TextLabel", {
-        BackgroundTransparency = 1, Position = UDim2.fromOffset(10, hint and 5 or 0),
-        Size = UDim2.new(1, -rightPad, 0, hint and 18 or 34), Text = text, TextColor3 = THEME.text,
-        Font = Enum.Font.GothamMedium, TextSize = 13, TextXAlignment = LEFT,
-    }, r)
-    if hint then
-        new("TextLabel", {
-            BackgroundTransparency = 1, Position = UDim2.fromOffset(10, 23),
-            Size = UDim2.new(1, -rightPad, 0, 16), Text = hint, TextColor3 = THEME.sub,
-            Font = Enum.Font.Gotham, TextSize = 11, TextXAlignment = LEFT,
-        }, r)
+local function rich(text, hint)
+    local function esc(v)
+        return (tostring(v):gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"))
+    end
+    local s = esc(text)
+    if hint and hint ~= "" then
+        s = s .. '<br/><font size="10" color="#8d90a0">' .. esc(hint) .. "</font>"
+    end
+    return s
+end
+
+local function register(tab, frame, text)
+    ST.widgets[#ST.widgets + 1] = { tab = tab, frame = frame, text = string.lower(text or ""), group = tab.group }
+end
+
+
+-- arama (sol menu)
+do
+local searchWrap = new("Frame", {
+    Position = UDim2.fromOffset(8, 6), Size = UDim2.new(1, -16, 0, 28),
+    BackgroundColor3 = THEME.panel, BorderSizePixel = 0,
+}, tabBar)
+round(searchWrap, 4)
+new("TextLabel", {
+    BackgroundTransparency = 1, Position = UDim2.fromOffset(6, 0), Size = UDim2.fromOffset(18, 28),
+    Text = "🔍", TextColor3 = THEME.text, Font = Enum.Font.Gotham, TextSize = 12,
+}, searchWrap)
+local searchBox = new("TextBox", {
+    BackgroundTransparency = 1, Position = UDim2.fromOffset(26, 0), Size = UDim2.new(1, -30, 1, 0),
+    Text = "", PlaceholderText = "Search", PlaceholderColor3 = THEME.sub, TextColor3 = THEME.text,
+    Font = Enum.Font.GothamMedium, TextSize = 12, TextXAlignment = Enum.TextXAlignment.Left, ClearTextOnFocus = false,
+}, searchWrap)
+
+-- Arama: eslesmeyen satirlari gizler, eslesen bolumleri acar
+local function applySearch(q)
+    q = string.lower(q or "")
+    ST.searching = q ~= ""
+    local counts, hitGroups = {}, {}
+    for _, w in ipairs(ST.widgets) do
+        local g = w.group
+        local hit = (not ST.searching) or string.find(w.text, q, 1, true) ~= nil
+            or (g ~= nil and string.find(g.name, q, 1, true) ~= nil)
+        w.frame.Visible = hit
+        if hit then
+            counts[w.tab] = (counts[w.tab] or 0) + 1
+            if g then hitGroups[g] = true end
+        end
+    end
+    for _, g in ipairs(ST.groups) do
+        if ST.searching then
+            g.frame.Visible = hitGroups[g] == true
+            g.body.Visible = hitGroups[g] == true
+        else
+            g.frame.Visible = true
+            g.setOpen(g.open)
+        end
+    end
+    local firstHit
+    for _, d in ipairs(TAB_DEFS) do
+        local n = d[1]
+        local has = (not ST.searching) or (counts[tabs[n]] or 0) > 0
+        if has and not firstHit then firstHit = n end
+        ST.tabButtons[n].Visible = true
+        ST.tabLabels[n].TextTransparency = has and 0 or 0.6
+    end
+    if ST.searching and firstHit and (counts[tabs[ST.cur]] or 0) == 0 then
+        selectTab(firstHit)
     end
 end
-
-local function section(tab, text)
-    new("TextLabel", {
-        BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 22), Text = string.upper(text),
-        TextColor3 = THEME.accent, Font = Enum.Font.GothamBold, TextSize = 11,
-        TextXAlignment = LEFT, LayoutOrder = nextOrder(tab),
-    }, tab.frame)
+connect(searchBox:GetPropertyChangedSignal("Text"), function() applySearch(searchBox.Text) end)
 end
 
-local function toggle(tab, text, key, hint, onChange)
-    local r = row(tab, hint and 46 or 34)
-    rowTexts(r, text, hint, 72)
-    local track = new("TextButton", {
-        AutoButtonColor = false, Text = "", Size = UDim2.fromOffset(44, 22),
-        Position = UDim2.new(1, -54, 0.5, -11), BackgroundColor3 = THEME.off, BorderSizePixel = 0,
-    }, r)
-    round(track, 11)
-    local knob = new("Frame", {
-        Size = UDim2.fromOffset(16, 16), Position = UDim2.fromOffset(3, 3),
-        BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0,
-    }, track)
-    round(knob, 8)
-    local function refresh(instant)
-        local on = S[key]
-        local info = TweenInfo.new(instant and 0 or 0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-        TweenService:Create(knob, info, { Position = on and UDim2.fromOffset(25, 3) or UDim2.fromOffset(3, 3) }):Play()
-        TweenService:Create(track, info, { BackgroundColor3 = on and THEME.on or THEME.off }):Play()
+-- Acilip kapanan bolum (ilk bolum her sutunda acik, digerleri kapali)
+function section(tab, text)
+    local open = (tab.nsec[tab.frame] or 0) == 0
+    tab.nsec[tab.frame] = (tab.nsec[tab.frame] or 0) + 1
+    local g = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundTransparency = 1, LayoutOrder = nextOrder(tab),
+    }, tab.frame)
+    new("UIListLayout", { Padding = UDim.new(0, 2), SortOrder = Enum.SortOrder.LayoutOrder }, g)
+    local header = new("TextButton", {
+        Size = UDim2.new(1, 0, 0, 28), BackgroundColor3 = THEME.header, AutoButtonColor = false,
+        Text = "", BorderSizePixel = 0, LayoutOrder = 1,
+    }, g)
+    round(header, 4)
+    new("TextLabel", {
+        BackgroundTransparency = 1, Position = UDim2.fromOffset(10, 0), Size = UDim2.new(1, -34, 1, 0),
+        Text = text, TextColor3 = THEME.text, Font = Enum.Font.GothamBold, TextSize = 13,
+        TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+    }, header)
+    local arrow = new("TextLabel", {
+        BackgroundTransparency = 1, Position = UDim2.new(1, -24, 0, 0), Size = UDim2.fromOffset(18, 28),
+        Text = open and "▼" or "◀", TextColor3 = THEME.text, Font = Enum.Font.Gotham, TextSize = 11,
+    }, header)
+    local bodyF = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundColor3 = THEME.panel,
+        BorderSizePixel = 0, LayoutOrder = 2, Visible = open,
+    }, g)
+    round(bodyF, 4)
+    new("UIListLayout", { Padding = UDim.new(0, 5), SortOrder = Enum.SortOrder.LayoutOrder }, bodyF)
+    new("UIPadding", {
+        PaddingTop = UDim.new(0, 7), PaddingBottom = UDim.new(0, 7),
+        PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8),
+    }, bodyF)
+    local grp = { tab = tab, frame = g, body = bodyF, name = string.lower(text), open = open }
+    grp.setOpen = function(v)
+        grp.open = v
+        bodyF.Visible = v
+        arrow.Text = v and "▼" or "◀"
     end
-    connect(track.MouseButton1Click, function()
+    connect(header.MouseButton1Click, function()
+        if not ST.searching then
+            grp.setOpen(not grp.open)
+        end
+    end)
+    tab.container, tab.group = bodyF, grp
+    ST.groups[#ST.groups + 1] = grp
+end
+
+-- Onay kutusu (checkbox)
+function toggle(tab, text, key, hint, onChange)
+    local r = new("TextButton", {
+        Size = UDim2.new(1, 0, 0, 22), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1,
+        Text = "", AutoButtonColor = false, LayoutOrder = nextOrder(tab),
+    }, host(tab))
+    new("UIPadding", { PaddingTop = UDim.new(0, 2), PaddingBottom = UDim.new(0, 2) }, r)
+    local box = new("Frame", {
+        Size = UDim2.fromOffset(18, 18), Position = UDim2.fromOffset(0, 1),
+        BackgroundColor3 = THEME.off, BorderSizePixel = 0,
+    }, r)
+    round(box, 3)
+    new("UIStroke", { Color = THEME.boxLine, Thickness = 1 }, box)
+    local fill = new("Frame", {
+        Size = UDim2.fromOffset(10, 10), Position = UDim2.fromOffset(4, 4),
+        BackgroundColor3 = THEME.on, BorderSizePixel = 0, Visible = false,
+    }, box)
+    round(fill, 2)
+    new("TextLabel", {
+        BackgroundTransparency = 1, Position = UDim2.fromOffset(26, 1), Size = UDim2.new(1, -26, 0, 0),
+        AutomaticSize = Enum.AutomaticSize.Y, RichText = true, Text = rich(text, hint),
+        TextColor3 = THEME.text, Font = Enum.Font.GothamMedium, TextSize = 12,
+        TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top, TextWrapped = true,
+    }, r)
+    local function refresh()
+        fill.Visible = S[key] and true or false
+    end
+    connect(r.MouseButton1Click, function()
         S[key] = not S[key]
         refresh()
         if onChange then onChange() end
         save()
     end)
-    refresh(true)
-    refreshers[#refreshers + 1] = function() refresh(true) end
+    refresh()
+    refreshers[#refreshers + 1] = refresh
+    register(tab, r, text .. " " .. (hint or ""))
 end
 
-local function fmtNumber(v, suffix)
-    return string.format("%g", v) .. (suffix or "")
-end
-
-local function stepper(tab, text, key, step, minV, maxV, suffix, hint, onChange)
-    local r = row(tab, hint and 46 or 34)
-    rowTexts(r, text, hint, 160)
+function stepper(tab, text, key, step, minV, maxV, suffix, hint, onChange)
+    local r = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 24), AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundTransparency = 1, LayoutOrder = nextOrder(tab),
+    }, host(tab))
+    new("UIPadding", { PaddingTop = UDim.new(0, 1), PaddingBottom = UDim.new(0, 1) }, r)
+    new("TextLabel", {
+        BackgroundTransparency = 1, Position = UDim2.fromOffset(0, 3), Size = UDim2.new(1, -104, 0, 0),
+        AutomaticSize = Enum.AutomaticSize.Y, RichText = true, Text = rich(text, hint),
+        TextColor3 = THEME.text, Font = Enum.Font.GothamMedium, TextSize = 12,
+        TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top, TextWrapped = true,
+    }, r)
     local function mk(txt, xOff)
         local b = new("TextButton", {
-            Size = UDim2.fromOffset(26, 24), Position = UDim2.new(1, xOff, 0.5, -12),
-            BackgroundColor3 = THEME.panel2, TextColor3 = THEME.accent, Text = txt,
-            Font = Enum.Font.GothamBold, TextSize = 16, BorderSizePixel = 0,
+            Size = UDim2.fromOffset(22, 22), Position = UDim2.new(1, xOff, 0, 0),
+            BackgroundColor3 = THEME.panel2, TextColor3 = THEME.text, Text = txt,
+            Font = Enum.Font.GothamBold, TextSize = 14, BorderSizePixel = 0,
         }, r)
-        round(b, 6)
+        round(b, 4)
         return b
     end
-    local plus = mk("+", -36)
-    local minus = mk("-", -142)
+    local plus = mk("+", -22)
+    local minus = mk("-", -98)
     local valueLabel = new("TextLabel", {
-        BackgroundTransparency = 1, Size = UDim2.fromOffset(74, 24), Position = UDim2.new(1, -112, 0.5, -12),
-        TextColor3 = THEME.text, Font = Enum.Font.GothamMedium, TextSize = 12, Text = "",
+        BackgroundTransparency = 1, Size = UDim2.fromOffset(50, 22), Position = UDim2.new(1, -74, 0, 0),
+        TextColor3 = THEME.text, Font = Enum.Font.GothamMedium, TextSize = 11, Text = "",
+        TextTruncate = Enum.TextTruncate.AtEnd,
     }, r)
     local function refresh()
-        valueLabel.Text = fmtNumber(S[key], suffix)
+        valueLabel.Text = string.format("%g", S[key]) .. (suffix or "")
     end
     local function change(dir)
         local v = S[key] + dir * step
@@ -5166,37 +7252,36 @@ local function stepper(tab, text, key, step, minV, maxV, suffix, hint, onChange)
     connect(minus.MouseButton1Click, function() change(-1) end)
     refresh()
     refreshers[#refreshers + 1] = refresh
+    register(tab, r, text .. " " .. (hint or ""))
 end
 
---- Acilir liste. getOptions() -> {string}, get() -> string, set(string)
-local function dropdown(tab, text, getOptions, get, set)
+--- Acilir liste: "Field: Pine Tree Forest v" seklinde tek cubuk.
+--- getOptions() -> {string}, get() -> string, set(string)
+function dropdown(tab, text, getOptions, get, set)
     local container = new("Frame", {
-        Size = UDim2.new(1, 0, 0, 34), AutomaticSize = Enum.AutomaticSize.Y,
+        Size = UDim2.new(1, 0, 0, 28), AutomaticSize = Enum.AutomaticSize.Y,
         BackgroundTransparency = 1, LayoutOrder = nextOrder(tab),
-    }, tab.frame)
-    new("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }, container)
+    }, host(tab))
+    new("UIListLayout", { Padding = UDim.new(0, 3), SortOrder = Enum.SortOrder.LayoutOrder }, container)
 
-    local header = new("Frame", {
-        Size = UDim2.new(1, 0, 0, 34), BackgroundColor3 = THEME.panel, BorderSizePixel = 0, LayoutOrder = 1,
+    local header = new("TextButton", {
+        Size = UDim2.new(1, 0, 0, 28), BackgroundColor3 = THEME.panel2, TextColor3 = THEME.text,
+        Font = Enum.Font.GothamMedium, TextSize = 12, BorderSizePixel = 0, AutoButtonColor = false,
+        Text = "", LayoutOrder = 1, TextTruncate = Enum.TextTruncate.AtEnd,
     }, container)
-    round(header, 8)
+    round(header, 4)
+    new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 22) }, header)
     new("TextLabel", {
-        BackgroundTransparency = 1, Position = UDim2.fromOffset(10, 0), Size = UDim2.new(0.4, 0, 1, 0),
-        Text = text, TextColor3 = THEME.text, Font = Enum.Font.GothamMedium, TextSize = 13, TextXAlignment = LEFT,
+        BackgroundTransparency = 1, Position = UDim2.new(1, 14, 0, 0), Size = UDim2.fromOffset(16, 28),
+        Text = "▼", TextColor3 = THEME.text, Font = Enum.Font.Gotham, TextSize = 10,
     }, header)
-    local valueBtn = new("TextButton", {
-        Size = UDim2.new(0.6, -16, 0, 24), Position = UDim2.new(0.4, 6, 0.5, -12),
-        BackgroundColor3 = THEME.panel2, TextColor3 = THEME.text, Font = Enum.Font.GothamMedium,
-        TextSize = 12, BorderSizePixel = 0, Text = "",
-    }, header)
-    round(valueBtn, 6)
 
     local list = new("ScrollingFrame", {
-        Size = UDim2.new(1, 0, 0, 0), BackgroundColor3 = THEME.panel, BorderSizePixel = 0,
+        Size = UDim2.new(1, 0, 0, 0), BackgroundColor3 = THEME.side, BorderSizePixel = 0,
         ScrollBarThickness = 3, ScrollBarImageColor3 = THEME.accent, CanvasSize = UDim2.new(),
         AutomaticCanvasSize = Enum.AutomaticSize.Y, Visible = false, LayoutOrder = 2,
     }, container)
-    round(list, 8)
+    round(list, 4)
     new("UIListLayout", { Padding = UDim.new(0, 3), SortOrder = Enum.SortOrder.LayoutOrder }, list)
     new("UIPadding", {
         PaddingTop = UDim.new(0, 4), PaddingBottom = UDim.new(0, 4),
@@ -5206,7 +7291,7 @@ local function dropdown(tab, text, getOptions, get, set)
     local isOpen = false
     local function refresh()
         local cur = get()
-        valueBtn.Text = (cur ~= "" and cur or "(pick one)") .. "   v"
+        header.Text = text .. ": " .. (cur ~= "" and cur or "(pick one)")
     end
     local function close()
         isOpen = false
@@ -5225,11 +7310,11 @@ local function dropdown(tab, text, getOptions, get, set)
         for i, o in ipairs(opts) do
             local b = new("TextButton", {
                 Size = UDim2.new(1, 0, 0, 26), LayoutOrder = i, Text = tostring(o),
-                BackgroundColor3 = (o == cur) and THEME.accentDim or THEME.panel2,
-                TextColor3 = (o == cur) and THEME.accent or THEME.text,
+                BackgroundColor3 = (o == cur) and THEME.accentDim or THEME.panel,
+                TextColor3 = (o == cur) and THEME.text or THEME.sub,
                 Font = Enum.Font.Gotham, TextSize = 12, BorderSizePixel = 0,
             }, list)
-            round(b, 6)
+            round(b, 4)
             connect(b.MouseButton1Click, function()
                 if string.sub(tostring(o), 1, 1) ~= "(" then
                     set(o)
@@ -5240,7 +7325,7 @@ local function dropdown(tab, text, getOptions, get, set)
             end)
         end
     end
-    connect(valueBtn.MouseButton1Click, function()
+    connect(header.MouseButton1Click, function()
         if isOpen then
             close()
         else
@@ -5251,54 +7336,97 @@ local function dropdown(tab, text, getOptions, get, set)
     end)
     refresh()
     refreshers[#refreshers + 1] = function() close() refresh() end
+    register(tab, container, text)
 end
 
-local function button(tab, text, onClick, color, textColor)
+-- Metin kutusu (webhook linki gibi). Odak disindayken degerin sonu gizlenir.
+function textbox(tab, text, key, placeholder, onChange)
+    local r = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 44), AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundTransparency = 1, LayoutOrder = nextOrder(tab),
+    }, host(tab))
+    new("UIListLayout", { Padding = UDim.new(0, 3), SortOrder = Enum.SortOrder.LayoutOrder }, r)
+    new("TextLabel", {
+        BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 16), Text = text, TextColor3 = THEME.text,
+        Font = Enum.Font.GothamMedium, TextSize = 12, TextXAlignment = Enum.TextXAlignment.Left, LayoutOrder = 1,
+    }, r)
+    local box = new("TextBox", {
+        Size = UDim2.new(1, 0, 0, 26), BackgroundColor3 = THEME.side, TextColor3 = THEME.text,
+        PlaceholderText = placeholder or "", PlaceholderColor3 = THEME.sub, Font = Enum.Font.Gotham,
+        TextSize = 11, TextXAlignment = Enum.TextXAlignment.Left, ClearTextOnFocus = false,
+        BorderSizePixel = 0, LayoutOrder = 2, Text = "", TextTruncate = Enum.TextTruncate.AtEnd,
+    }, r)
+    round(box, 4)
+    new("UIPadding", { PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 6) }, box)
+    local function shown()
+        local v = S[key] or ""
+        return v == "" and "" or (string.sub(v, 1, 33) .. " ••••••••")
+    end
+    connect(box.Focused, function()
+        box.Text = S[key] or ""
+    end)
+    connect(box.FocusLost, function()
+        S[key] = string.match(box.Text, "^%s*(.-)%s*$") or ""
+        box.Text = shown()
+        if onChange then onChange() end
+        save()
+    end)
+    box.Text = shown()
+    refreshers[#refreshers + 1] = function() box.Text = shown() end
+    register(tab, r, text)
+end
+
+function button(tab, text, onClick, color, textColor)
     local b = new("TextButton", {
-        Size = UDim2.new(1, 0, 0, 32), BackgroundColor3 = color or THEME.panel2,
-        TextColor3 = textColor or THEME.text, Font = Enum.Font.GothamBold, TextSize = 13,
-        Text = text, BorderSizePixel = 0, LayoutOrder = nextOrder(tab),
-    }, tab.frame)
-    round(b, 8)
+        Size = UDim2.new(1, 0, 0, 26), AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundColor3 = color or THEME.panel2, TextColor3 = textColor or THEME.text,
+        Font = Enum.Font.GothamMedium, TextSize = 12, Text = text, TextWrapped = true,
+        BorderSizePixel = 0, LayoutOrder = nextOrder(tab),
+    }, host(tab))
+    round(b, 4)
+    new("UIPadding", { PaddingTop = UDim.new(0, 5), PaddingBottom = UDim.new(0, 5) }, b)
     connect(b.MouseButton1Click, onClick)
+    register(tab, b, text)
     return b
 end
 
-local function infoBox(tab, text)
+function infoBox(tab, text)
     local r = new("TextLabel", {
         Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
-        BackgroundColor3 = THEME.panel, BorderSizePixel = 0, TextWrapped = true,
+        BackgroundColor3 = THEME.side, BorderSizePixel = 0, TextWrapped = true,
         Text = text, TextColor3 = THEME.sub, Font = Enum.Font.Gotham, TextSize = 11,
-        TextXAlignment = LEFT, TextYAlignment = Enum.TextYAlignment.Top, LayoutOrder = nextOrder(tab),
-    }, tab.frame)
-    round(r, 8)
+        TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top, LayoutOrder = nextOrder(tab),
+    }, host(tab))
+    round(r, 4)
     new("UIPadding", {
-        PaddingTop = UDim.new(0, 7), PaddingBottom = UDim.new(0, 7),
-        PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10),
+        PaddingTop = UDim.new(0, 6), PaddingBottom = UDim.new(0, 6),
+        PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8),
     }, r)
+    register(tab, r, text)
     return r
 end
 
 -- alt cubuk: durum -----------------------------------------
 local footer = new("Frame", {
-    Size = UDim2.new(1, 0, 0, 44), Position = UDim2.new(0, 0, 1, -44),
-    BackgroundColor3 = THEME.panel, BorderSizePixel = 0,
+    Size = UDim2.new(1, 0, 0, 34), Position = UDim2.new(0, 0, 1, -34),
+    BackgroundColor3 = THEME.side, BorderSizePixel = 0,
 }, body)
-round(footer, 12)
 new("Frame", {
-    Size = UDim2.new(1, 0, 0, 12), BackgroundColor3 = THEME.panel, BorderSizePixel = 0,
+    Size = UDim2.new(1, 0, 0, 1), BackgroundColor3 = Color3.fromRGB(58, 58, 66), BorderSizePixel = 0,
 }, footer)
 
 statusDot = new("Frame", {
-    Size = UDim2.fromOffset(9, 9), Position = UDim2.fromOffset(14, 20),
+    Size = UDim2.fromOffset(9, 9), Position = UDim2.fromOffset(14, 13),
     BackgroundColor3 = Color3.fromRGB(110, 114, 132), BorderSizePixel = 0,
 }, footer)
 round(statusDot, 5)
 statusLabel = new("TextLabel", {
-    BackgroundTransparency = 1, Position = UDim2.fromOffset(30, 6), Size = UDim2.new(1, -44, 1, -12),
+    BackgroundTransparency = 1, Position = UDim2.fromOffset(30, 4), Size = UDim2.new(1, -44, 1, -8),
     Text = "idle", TextColor3 = THEME.sub, TextWrapped = true, TextSize = 12,
-    Font = Enum.Font.Gotham, TextXAlignment = LEFT,
+    Font = Enum.Font.Gotham, TextXAlignment = Enum.TextXAlignment.Left,
 }, footer)
+
+end -- GUI yardimci blogu sonu
 
 local function refreshStart()
     statusDot.BackgroundColor3 = S.AutoFarm and THEME.on or Color3.fromRGB(110, 114, 132)
@@ -5330,13 +7458,26 @@ end
 refreshStart()
 
 -- ------------------------------------------------------------- Farm sekmesi
+do
 local farmTab = tabs.Farm
-section(farmTab, "Auto farm")
-toggle(farmTab, "Auto farm", "AutoFarm", "Starts / stops farming (hotkey in the UI tab)", applyFarmState)
-section(farmTab, "Field & movement")
+env.BSSSprout.reset = function()
+    local C = env.BSSSprout
+    C.cur, C.curZone, C.zoneName, C.hintZone = nil, nil, nil, nil
+    if S.AutoSprouts or S.AutoPuffshrooms then
+        C.signalAt = tick() -- acilinca haritada zaten duran olanlari da ara
+        C.deepAt, C.scanAt = 0, 0
+    end
+end
+
+-- sol sutun ---------------------------------------------------------
+section(farmTab, "Farming")
 dropdown(farmTab, "Field", fieldNames,
     function() return S.Field end,
     function(v) S.Field = v end)
+toggle(farmTab, "Autofarm", "AutoFarm", "Starts / stops farming (hotkey in the Config tab)", applyFarmState)
+toggle(farmTab, "Auto Tool", "AutoTool", "Equips and clicks your collector")
+toggle(farmTab, "Auto Sprinkler", "AutoSprinkler", "Places your sprinkler(s) when you arrive in a field (uses the Sprinkler Builder)", env.BSSSprinkler.reset)
+section(farmTab, "Farm Settings")
 dropdown(farmTab, "Pattern", function() return PATTERNS end,
     function() return PATTERNS[S.Pattern] end,
     function(v)
@@ -5347,22 +7488,78 @@ dropdown(farmTab, "Pattern", function() return PATTERNS end,
 stepper(farmTab, "Pattern size", "PatternSize", 5, 30, 100, "%", "How much of the field the pattern covers")
 stepper(farmTab, "Pattern speed", "PatternSpeed", 1, 2, 12, nil, "Higher = faster loops")
 stepper(farmTab, "Travel speed", "MoveSpeed", 10, 30, 150, " st/s", "Field <-> hive trips")
-section(farmTab, "Hive")
+stepper(farmTab, "Sprinklers per field", "SprinklerCount", 1, 1, 5, nil, "How many sprinklers your hive allows (Basic 1 ... Saturator 5)", env.BSSSprinkler.reset)
+stepper(farmTab, "Sprinkler spacing", "SprinklerSpacing", 2, 10, 60, " st", "Distance from the field center; sprinklers need ~8 flowers between them", env.BSSSprinkler.reset)
+button(farmTab, "Place a sprinkler now (stand in a field)", function()
+    setStatus(env.BSSSprinkler.fire() and "sprinkler requested" or "Events.PlayerActivesCommand not found")
+end)
+section(farmTab, "Convert Settings")
 toggle(farmTab, "Auto convert", "Convert", "Go home and make honey when the bag is full")
+toggle(farmTab, "Vicious / firefly first", "EventPriority", "Kill Vicious / chase fireflies before converting, even with a full bag")
 stepper(farmTab, "Convert at", "ConvertAt", 10, 30, 100, "%", "Bag fill level that triggers a trip")
 stepper(farmTab, "Convert timeout", "ConvertTimeout", 15, 30, 300, " s", "Give up waiting after this long")
 button(farmTab, "Convert debug (F9)", toolKit.convertDebug)
-section(farmTab, "Tool")
-toggle(farmTab, "Auto use tool", "AutoTool", "Equips and clicks your collector")
+section(farmTab, "Precise Bee")
+toggle(farmTab, "Step on Target Practice targets", "PreciseTargets", "Visits the 3 targets in order, then goes back to what it was doing", function()
+    targetKit.endSession(true)
+end)
+stepper(farmTab, "Time on each target", "TargetHoldSec", 0.1, 0.2, 10, " s", "How long you stay on every Target Practice target")
+button(farmTab, "Target debug (F9)", function() targetKit.debug() end)
+section(farmTab, "Tool Settings")
 stepper(farmTab, "Click interval", "ToolInterval", 0.05, 0.3, 2, " s")
 button(farmTab, "Tool debug (F9)", toolKit.debug)
 button(farmTab, "Click spy ON/OFF (swing by hand, F9)", toolKit.spy)
 
+-- sag sutun ---------------------------------------------------------
+useColumn(farmTab, "right")
+section(farmTab, "Sprout Settings")
+toggle(farmTab, "Farm Sprouts", "AutoSprouts", "When a sprout spawns, farms that field until it pops (not Ant Field)", env.BSSSprout.reset)
+stepper(farmTab, "Give up after", "SproutGiveUpMin", 1, 1, 30, " min", "Skips a sprout that takes longer than this (it despawns after 5 min idle)")
+env.BSSSprout.label = infoBox(farmTab, "Sprouts / puffshrooms: off")
+button(farmTab, "Sprout / puffshroom debug (F9)", function() env.BSSSprout.debug() end)
+section(farmTab, "Puffshrooms")
+toggle(farmTab, "Farm Puffshrooms", "AutoPuffshrooms", "When a puffshroom grows, farms that field until it explodes", env.BSSSprout.reset)
+stepper(farmTab, "Give up after", "PuffGiveUpMin", 1, 1, 60, " min", "Skips a puffshroom that takes longer than this")
+section(farmTab, "Bloom Settings")
+toggle(farmTab, "Farm Blooms", "FarmBlooms", "Pops the nearest selected bloom and collects its petals", env.BSSBloom.reset)
+toggle(farmTab, "Only in my farm field", "BloomOnlyFarmField", "On = only blooms in the field you are farming, never travels to another field. Off = also goes to blooms in other fields", env.BSSBloom.reset)
+stepper(farmTab, "Give up after", "BloomGiveUpSec", 5, 10, 300, " s", "Skips a bloom that takes longer than this")
+stepper(farmTab, "Petal range", "BloomPetalRange", 10, 20, 300, " st", "Only petals closer than this are collected")
+env.BSSBloom.label = infoBox(farmTab, "Blooms: off")
+button(farmTab, "Bloom debug (F9)", function() env.BSSBloom.debug() end)
+section(farmTab, "Bloom Colors")
+for _, c in ipairs(env.BSSBloom.COLORS) do
+    toggle(farmTab, c .. " bloom", "Bloom" .. c)
+end
+toggle(farmTab, "Other / unknown colour", "BloomOther", "Blooms whose colour could not be read")
+button(farmTab, "All colours ON", function()
+    for _, c in ipairs(env.BSSBloom.COLORS) do S["Bloom" .. c] = true end
+    S.BloomOther = true
+    for _, fn in ipairs(refreshers) do pcall(fn) end
+    save()
+end)
+button(farmTab, "All colours OFF", function()
+    for _, c in ipairs(env.BSSBloom.COLORS) do S["Bloom" .. c] = false end
+    S.BloomOther = false
+    for _, fn in ipairs(refreshers) do pcall(fn) end
+    save()
+end)
+end
+
 -- ----------------------------------------------------------- Tokens sekmesi
+do
 local tokTab = tabs.Tokens
 section(tokTab, "Collecting")
 toggle(tokTab, "Collect tokens", "Tokens")
 toggle(tokTab, "Auto pop bubbles", "AutoPopBubbles", "Bubbles and tokens are visited nearest-first")
+toggle(tokTab, "Prioritize Moon Charm", "PrioMoonCharm", "Moon Charm tokens are collected before anything else, even outside the field")
+stepper(tokTab, "Moon charm range", "MoonRange", 25, 25, 500, " st", "Only moon charm tokens closer than this are chased")
+button(tokTab, "Learn moon charm token (stand next to it)", tokenKit.learnMoon)
+button(tokTab, "Clear learned moon charm IDs", function()
+    S.MoonTokenId = ""
+    save()
+    setStatus("learned moon charm IDs cleared")
+end)
 toggle(tokTab, "Prioritize Token Link", "PrioTokenLink", "Goes for Token Link first, then nearest-first")
 toggle(tokTab, "Collect honey tokens", "CollectHoney", "Off = honey tokens are skipped")
 button(tokTab, "Token debug (F9)", tokenKit.debug)
@@ -5374,7 +7571,27 @@ stepper(tokTab, "Tween speed", "TokenTweenSpeed", 5, 10, 80, " st/s")
 stepper(tokTab, "Tween max time", "TweenMaxTime", 0.25, 0.5, 3, " s", "Longest tween for a single token")
 stepper(tokTab, "Token range", "TokenRange", 5, 0, 80, nil, "Only used when 'inside field' is OFF")
 
+useColumn(tokTab, "right")
+section(tokTab, "Sticker tokens")
+toggle(tokTab, "Collect sticker tokens", "StickerTokens", "Flies to sticker tokens lying on the ground (even outside the field), then goes back to farming")
+stepper(tokTab, "Sticker token range", "StickerTokenRange", 20, 20, 500, " st", "Only sticker tokens closer than this are collected")
+stepper(tokTab, "Sticker tween speed", "StickerTweenSpeed", 10, 20, 400, " st/s", "How fast you tween to sticker tokens (both sticker sections)")
+button(tokTab, "Learn sticker token (stand next to it)", tokenKit.learnSticker)
+button(tokTab, "Clear learned sticker IDs", function()
+    S.StickerTokenId = ""
+    save()
+    setStatus("learned sticker token IDs cleared")
+end)
+section(tokTab, "Auto sticker tokens (rainbow)")
+toggle(tokTab, "Auto collect sticker tokens", "RainbowTokens", "Detects the colorful (rainbow) sticker tokens by their colors and collects them, even outside the field")
+stepper(tokTab, "Rainbow token range", "RainbowRange", 20, 20, 500, " st", "Only tokens closer than this are collected")
+stepper(tokTab, "Sticker tween speed", "StickerTweenSpeed", 10, 20, 400, " st/s", "Same setting as above: tween speed to sticker tokens")
+stepper(tokTab, "Min. different colors", "RainbowMinHues", 1, 2, 6, nil, "Lower = more tokens count as rainbow, higher = stricter")
+button(tokTab, "Rainbow debug (F9)", tokenKit.rainbowDebug)
+end
+
 -- ----------------------------------------------------------- Firefly sekmesi
+do
 local ffTab = tabs.Firefly
 section(ffTab, "Firefly hunt")
 toggle(ffTab, "Chase fireflies", "ChaseFireflies", "Chases every firefly event until the night ends")
@@ -5383,6 +7600,7 @@ toggle(ffTab, "Night only (auto)", "FireflyNightOnly", "Uses the in-game night, 
 section(ffTab, "Chase")
 stepper(ffTab, "Skip stuck firefly", "FireflySkipSec", 5, 5, 120, " s", "Ignore one that stays after reaching it")
 stepper(ffTab, "Max firefly height", "FireflyMaxHeight", 1, 2, 40, " st", "Fireflies higher than this above the field are ignored")
+useColumn(ffTab, "right")
 section(ffTab, "Status")
 fireflyInfoLabel = infoBox(ffTab, "Waiting for the first check...")
 button(ffTab, "Night & firefly debug (F9)", targetDebug)
@@ -5396,8 +7614,10 @@ button(ffTab, "Reset night calibration", function()
     resetSky()
     setStatus("night calibration reset")
 end)
+end
 
 -- ------------------------------------------------------------- Quest sekmesi
+do
 local questTab = tabs.Quest
 section(questTab, "Polar Bear quest")
 toggle(questTab, "Polar Bear quest", "PolarQuest", "Reads your quest list and follows it", function()
@@ -5415,6 +7635,7 @@ section(questTab, "Timing")
 stepper(questTab, "Read quests every", "QuestInterval", 1, 3, 60, " s")
 stepper(questTab, "Visit Polar Bear every", "QuestRetryMin", 1, 1, 20, " min")
 stepper(questTab, "Rotate fields every", "QuestRotateMin", 1, 1, 15, " min", "When a quest lists several fields")
+useColumn(questTab, "right")
 section(questTab, "Status")
 questInfoLabel = infoBox(questTab, "Turn the quest on to see what was detected.")
 button(questTab, "Visit Polar Bear now", function()
@@ -5422,8 +7643,35 @@ button(questTab, "Visit Polar Bear now", function()
     setStatus(S.AutoFarm and "visit queued" or "visit queued - turn on Auto farm")
 end)
 button(questTab, "Quest debug (prints to F9 console)", questDebug)
+end
+
+do
+local whTab = tabs.Webhook
+section(whTab, "Discord Webhook")
+textbox(whTab, "Webhook URL", "WebhookUrl", "https://discord.com/api/webhooks/...")
+toggle(whTab, "Send stinger report", "WebhookReport", "Posts your Vicious Bee stinger count to Discord on a timer", function()
+    env.BSSWebhook.nextAt = 0
+end)
+stepper(whTab, "Report every", "WebhookMinutes", 5, 5, 180, " min", "Default 20 minutes", function()
+    env.BSSWebhook.nextAt = 0
+end)
+toggle(whTab, "Message on Vicious kill", "WebhookOnKill", "Sends the stingers gained from that kill (~25 s after it dies)")
+button(whTab, "Send test message", function() task.spawn(env.BSSWebhook.test) end)
+useColumn(whTab, "right")
+section(whTab, "Stinger tracking")
+env.BSSWebhook.label = infoBox(whTab, env.BSSWebhook.summary())
+button(whTab, "Send report now", function()
+    task.spawn(function()
+        local ok = env.BSSWebhook.report()
+        setStatus(ok and "webhook: report sent" or env.BSSWebhook.info)
+    end)
+end)
+button(whTab, "Reset stinger counter", function() env.BSSWebhook.reset() end)
+button(whTab, "Stinger debug (F9)", function() env.BSSWebhook.debug() end)
+end
 
 -- ------------------------------------------------------------ Extras sekmesi
+do
 local extTab = tabs.Extras
 section(extTab, "Combat")
 toggle(extTab, "Auto hunt Vicious Bee", "KillVicious", "Detects the spawn, goes to its field and fights")
@@ -5447,12 +7695,7 @@ viciousInfoLabel = infoBox(extTab, "Vicious Bee: not checked yet")
 button(extTab, "Target debug (Vicious / Firefly, F9)", targetDebug)
 stepper(extTab, "Vicious distance", "ViciousDistance", 2, 6, 30, " st", "Circles the Vicious Bee at this distance so your bees can kill it")
 stepper(extTab, "Tween speed", "TravelSpeed", 20, 40, 400, " st/s", "Speed when tweening to Vicious / fireflies")
-section(extTab, "Precise Bee")
-toggle(extTab, "Step on Target Practice targets", "PreciseTargets", "Visits the 3 targets in order, then goes back to what it was doing", function()
-    targetKit.endSession(true)
-end)
-stepper(extTab, "Time on each target", "TargetHoldSec", 0.1, 0.2, 10, " s", "How long you stay on every Target Practice target")
-button(extTab, "Target debug (F9)", function() targetKit.debug() end)
+useColumn(extTab, "right")
 section(extTab, "Stickers")
 toggle(extTab, "Auto find stickers", "AutoStickers", "Collects stickers lying around you, then goes back to farming", function()
     if S.AutoStickers then
@@ -5471,6 +7714,27 @@ stepper(extTab, "Collect every", "DispenserMinutes", 5, 5, 120, " min")
 for i, name in ipairs(FREE_DISPENSERS) do
     toggle(extTab, name, "Disp" .. i)
 end
+section(extTab, "Wealth Clock")
+toggle(extTab, "Auto Wealth Clock", "AutoWealthClock", "Claims the Wealth Clock (Tickets) once an hour from wherever you are, without walking", function()
+    env.BSSWealth.nextAt = 0
+end)
+stepper(extTab, "Claim every", "WealthClockMinutes", 1, 5, 180, " min", "The clock's cooldown is 60 min, keep this at 61 or more")
+button(extTab, "Claim Wealth Clock now", function()
+    env.BSSWealth.nextAt = 0
+    setStatus(S.AutoFarm and S.AutoWealthClock and "claim queued" or "turn on Auto farm and Auto Wealth Clock first")
+end)
+section(extTab, "Field Boosters")
+toggle(extTab, "Auto use boosters", "AutoBoosters", "Uses the field boosters from wherever you are, without walking to them", function()
+    env.BSSBooster.nextAt = 0
+end)
+toggle(extTab, "Blue Field Booster", "BoostBlue")
+toggle(extTab, "Red Field Booster", "BoostRed")
+toggle(extTab, "White (Mountain Top) Booster", "BoostWhite")
+stepper(extTab, "Use every", "BoosterMinutes", 1, 5, 180, " min", "The boosters' cooldown is 45 min, keep this at 46 or more")
+button(extTab, "Use boosters now", function()
+    env.BSSBooster.nextAt = 0
+    setStatus(S.AutoFarm and S.AutoBoosters and "booster use queued" or "turn on Auto farm and Auto use boosters first")
+end)
 section(extTab, "Safety")
 toggle(extTab, "Anti-AFK", "AntiAFK")
 button(extTab, "Diagnose", function()
@@ -5483,6 +7747,8 @@ button(extTab, "Diagnose", function()
         warn("[BSSFarm] missing: " .. table.concat(missing, ", "))
     end
 end)
+
+end
 
 -- --------------------------------------------------------------- UI sekmesi
 local uiTab = tabs.UI
@@ -5505,6 +7771,7 @@ dropdown(uiTab, "Farm hotkey", function() return FARM_KEYS end,
 stepper(uiTab, "UI scale", "UIScale", 0.1, 0.7, 1.4, "x", "Make it bigger on phones", function()
     uiScale.Scale = S.UIScale
 end)
+useColumn(uiTab, "right")
 section(uiTab, "Settings")
 button(uiTab, "Reset all settings", function()
     for k, v in pairs(DEFAULTS) do
@@ -5525,12 +7792,12 @@ connect(minBtn.MouseButton1Click, function()
     minimized = not minimized
     body.Visible = not minimized
     tabBar.Visible = not minimized
-    window.Size = UDim2.fromOffset(W, minimized and 40 or H)
+    window.Size = UDim2.fromOffset(W, minimized and 30 or H)
 end)
 
 local miniOpen = new("TextButton", {
     Size = UDim2.fromOffset(46, 46), Position = UDim2.fromOffset(10, 200),
-    BackgroundColor3 = THEME.accent, TextColor3 = THEME.dark, Text = "BSS",
+    BackgroundColor3 = THEME.title, TextColor3 = Color3.new(1, 1, 1), Text = "Ayz",
     Font = Enum.Font.GothamBold, TextSize = 13, BorderSizePixel = 0, Visible = false,
 }, gui)
 round(miniOpen, 23)
