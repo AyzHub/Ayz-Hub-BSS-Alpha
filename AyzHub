@@ -430,8 +430,16 @@ local S = {
     SproutGiveUpMin = 6,   -- tek bir sprout icin en uzun sure (dk); sonra birakilir
     AutoPuffshrooms = false, -- puffshroom cikinca o tarlaya git, patlayana kadar orada farm et
     PuffGiveUpMin = 10,    -- tek bir puffshroom icin en uzun sure (dk); sonra birakilir
+    FarmBalloons = false,  -- tarlada balon varsa deseni balonun altinda kas (sprout / puffshroom / loot'tan SONRA gelir)
+    BalloonRadius = 10,    -- balonun altinda kasarken desenin yaricapi (st)
+    PuffLoot = true,       -- puffshroom patlayinca dusen loot'u otomatik topla
+    PuffLootSec = 20,      -- loot toplamak icin en uzun sure (sn)
+    PuffLootRadius = 70,   -- loot'un aranacagi yaricap (puffshroom'un konumundan, st)
     AutoStickers = false,  -- etraftaki sticker'lari topla
     StickerRange = 120,    -- sticker arama mesafesi (st)
+    RemoteStickers = false,       -- duvar / dekor vb. yerlerdeki TUM sticker'lari YURUMEDEN, olunan yerden tetikle
+    RemoteStickerInterval = 4,    -- uzaktan toplama turlari arasi sure (sn)
+    RemoteStickerRange = 0,       -- 0 = sinirsiz; >0 ise sadece bu mesafedekiler (st)
     StickerTokens = true,     -- yerdeki STICKER TOKEN'lerini topla (tarla disinda da)
     StickerTokenRange = 120,  -- sticker token arama mesafesi (st)
     StickerTokenId = "",      -- sticker token dokusu (ID); "Learn" butonuyla ogrenilir, virgulle birden cok
@@ -474,6 +482,8 @@ local S = {
     QuestAutoAccept = true,
     QuestAutoTurnIn = true,
     QuestFarmFields = true,
+    QuestLearnGive = "",   -- elle ogrenilen "gorev kabul" remote cagrisi (JSON)
+    QuestLearnComplete = "", -- elle ogrenilen "gorev teslim" remote cagrisi (JSON)
     QuestAnyGiver = true,  -- gorev listesinde ayuyu ayirt edemezsek tum gorevleri oku
     QuestWalkToNpc = true,
     QuestInterval = 10,    -- gorev listesini kac sn'de bir oku
@@ -1019,6 +1029,7 @@ local function updateQuest()
             polar[#polar + 1] = t
         end
     end
+    questState.hasPolar = #polar > 0
     local use = polar
     if #use == 0 and S.QuestAnyGiver then
         use = blocks
@@ -1041,39 +1052,292 @@ local function updateQuest()
 
     if questInfoLabel then
         local src = (#polar > 0) and "Polar Bear" or (S.QuestAnyGiver and "all quests" or "no Polar Bear quest")
-        questInfoLabel.Text = string.format("Source: %s\nQuest fields: %s\nFarming: %s",
+        questInfoLabel.Text = string.format("Source: %s\nQuest fields: %s\nFarming: %s\nAccept call: %s\nTurn-in call: %s",
             src,
             #fields > 0 and table.concat(fields, ", ") or "none found",
-            questState.field or "(your selected field)")
+            questState.field or "(your selected field)",
+            S.QuestLearnGive ~= "" and "learned" or (#questState.remotes("give") > 0 and "auto" or "NOT FOUND (use Learn)"),
+            S.QuestLearnComplete ~= "" and "learned" or (#questState.remotes("complete") > 0 and "auto" or "NOT FOUND (use Learn)"))
     end
+end
+
+-- Polar Bear NPC'si (adinda "polar" gecen model)
+questState.npc = function()
+    local npcs = workspace:FindFirstChild("NPCs")
+    if not npcs then
+        return nil
+    end
+    local bear = npcs:FindFirstChild("Polar Bear")
+    if bear then
+        return bear
+    end
+    for _, ch in ipairs(npcs:GetChildren()) do
+        if string.find(string.lower(ch.Name), "polar", 1, true) then
+            return ch
+        end
+    end
+    return nil
 end
 
 local function polarPos()
-    local npcs = workspace:FindFirstChild("NPCs")
-    local bear = npcs and npcs:FindFirstChild("Polar Bear")
+    local bear = questState.npc()
     if not bear then
         return nil
     end
-    return posOf(bear:FindFirstChild("Platform")) or posOf(bear)
+    local p = posOf(bear:FindFirstChild("Platform")) or posOf(bear)
+    if p then
+        return p
+    end
+    for _, d in ipairs(bear:GetDescendants()) do
+        if d:IsA("BasePart") then
+            return d.Position
+        end
+    end
+    return nil
 end
 
-local function fireQuest(remoteName, arg)
-    local events = RS:FindFirstChild("Events")
-    local r = events and events:FindFirstChild(remoteName)
-    if not r then
-        return false
+-- ---------------------------------------------------------------- gorev remote'lari
+-- Oyun gorev remote'larinin adini / argumanini degistirmis olabilir. Bu yuzden:
+--   1) "Learn" ile elle yaptigin cagri (remote adi + argumanlar) kaydedilir ve aynen tekrarlanir
+--   2) kayit yoksa Events icindeki "quest" iceren remote'lar siniflandirilip (give / complete) denenir
+questState.KNOWN = {
+    give = { "GiveQuestFromPool", "GiveQuest" },
+    complete = { "CompleteQuestFromPool", "CompleteQuest" },
+}
+
+questState.classify = function(name)
+    local n = string.lower(name)
+    if not string.find(n, "quest", 1, true) then
+        return nil
     end
+    if string.find(n, "complet", 1, true) or string.find(n, "turnin", 1, true)
+        or string.find(n, "finish", 1, true) or string.find(n, "claim", 1, true)
+        or string.find(n, "reward", 1, true) or string.find(n, "submit", 1, true) then
+        return "complete"
+    end
+    if string.find(n, "give", 1, true) or string.find(n, "accept", 1, true)
+        or string.find(n, "start", 1, true) or string.find(n, "take", 1, true)
+        or string.find(n, "begin", 1, true) then
+        return "give"
+    end
+    return nil
+end
+
+questState.remotes = function(kind)
+    local events = RS:FindFirstChild("Events")
+    local out, seen = {}, {}
+    if not events then
+        return out
+    end
+    local function add(r)
+        if r and not seen[r] and (r:IsA("RemoteEvent") or r:IsA("RemoteFunction")) then
+            seen[r] = true
+            out[#out + 1] = r
+        end
+    end
+    for _, nm in ipairs(questState.KNOWN[kind]) do
+        add(events:FindFirstChild(nm))
+    end
+    for _, r in ipairs(events:GetChildren()) do
+        if questState.classify(r.Name) == kind then
+            add(r)
+        end
+    end
+    return out
+end
+
+questState.call = function(r, args)
+    local n = args.n or #args
     if r:IsA("RemoteEvent") then
-        return pcall(function() r:FireServer(arg) end)
+        return (pcall(function() r:FireServer(table.unpack(args, 1, n)) end))
     elseif r:IsA("RemoteFunction") then
-        task.spawn(function() pcall(function() return r:InvokeServer(arg) end) end)
+        task.spawn(function() pcall(function() return r:InvokeServer(table.unpack(args, 1, n)) end) end)
         return true
     end
     return false
 end
 
+-- kind = "give" | "complete". Ne gonderildigini yazi olarak dondurur (hicbir sey gonderilemediyse nil).
+questState.send = function(kind)
+    local events = RS:FindFirstChild("Events")
+    local raw = S[kind == "give" and "QuestLearnGive" or "QuestLearnComplete"]
+    if type(raw) == "string" and raw ~= "" then
+        local ok, entry = pcall(function() return HttpService:JSONDecode(raw) end)
+        if ok and type(entry) == "table" and type(entry.remote) == "string" then
+            local r = (events and events:FindFirstChild(entry.remote)) or RS:FindFirstChild(entry.remote, true)
+            if r then
+                local args = type(entry.args) == "table" and entry.args or {}
+                args.n = tonumber(entry.n) or #args
+                if questState.call(r, args) then
+                    return "learned call " .. entry.remote
+                end
+            end
+        end
+    end
+    local used = {}
+    for _, r in ipairs(questState.remotes(kind)) do
+        if questState.call(r, { "Polar Bear", n = 1 }) then
+            used[#used + 1] = r.Name
+        end
+        task.wait(0.15)
+    end
+    if #used == 0 then
+        return nil
+    end
+    return table.concat(used, ", ")
+end
+
+-- NPC uzerinde ProximityPrompt / ClickDetector varsa tetikle (zararsiz; executor destegi gerekir)
+questState.interact = function(npc)
+    if not npc then
+        return
+    end
+    local fpp = env.fireproximityprompt or fireproximityprompt
+    local fcd = env.fireclickdetector or fireclickdetector
+    local n = 0
+    for _, d in ipairs(npc:GetDescendants()) do
+        n = n + 1
+        if n > 120 then
+            break
+        end
+        if d:IsA("ProximityPrompt") and type(fpp) == "function" then
+            pcall(fpp, d)
+        elseif d:IsA("ClickDetector") and type(fcd) == "function" then
+            pcall(fcd, d)
+        end
+    end
+end
+
+-- ---------------------------------------------------------------- "Learn" (cagri ogrenme)
+questState.learning = nil -- nil | "give" | "complete"
+
+questState.ser = function(v, depth)
+    local t = type(v)
+    if t == "string" or t == "number" or t == "boolean" then
+        return v, true
+    end
+    if t == "table" and depth < 3 then
+        local out = {}
+        for k, x in pairs(v) do
+            if type(k) ~= "string" and type(k) ~= "number" then
+                return nil, false
+            end
+            local sx, ok = questState.ser(x, depth + 1)
+            if not ok then
+                return nil, false
+            end
+            out[k] = sx
+        end
+        return out, true
+    end
+    return nil, false
+end
+
+questState.record = function(remote, args)
+    local kind = questState.learning
+    if not kind then
+        return
+    end
+    local cls = remote.ClassName
+    if cls ~= "RemoteEvent" and cls ~= "RemoteFunction" then
+        return
+    end
+    local n = string.lower(remote.Name)
+    local relevant = false
+    for _, w in ipairs({ "quest", "npc", "dialog", "talk", "bear", "chat" }) do
+        if string.find(n, w, 1, true) then
+            relevant = true
+            break
+        end
+    end
+    if not relevant then
+        return
+    end
+    local list = {}
+    for i = 1, args.n do
+        local v, ok = questState.ser(args[i], 0)
+        if not ok then
+            questState.learning = nil
+            task.defer(setStatus, "learn: " .. remote.Name .. " has arguments that cannot be saved (instances etc.)")
+            return
+        end
+        list[i] = v
+    end
+    local entry = { remote = remote.Name, class = cls, args = list, n = args.n }
+    local okj, json = pcall(function() return HttpService:JSONEncode(entry) end)
+    if not okj then
+        questState.learning = nil
+        return
+    end
+    S[kind == "give" and "QuestLearnGive" or "QuestLearnComplete"] = json
+    questState.learning = nil
+    task.defer(function()
+        save()
+        setStatus("learned " .. (kind == "give" and "ACCEPT" or "TURN-IN") .. " call: " .. remote.Name)
+        print("[BSSFarm] quest learn (" .. kind .. "):", json)
+        pcall(updateQuest)
+    end)
+end
+
+questState.hook = function()
+    if questState.hooked then
+        return true
+    end
+    if not (hookmetamethod and getnamecallmethod) then
+        return false
+    end
+    local old
+    local fn = function(self, ...)
+        if questState.learning then
+            local m = getnamecallmethod()
+            if (m == "FireServer" or m == "InvokeServer") and not (checkcaller and checkcaller()) then
+                local args = table.pack(...)
+                pcall(questState.record, self, args)
+            end
+        end
+        return old(self, ...)
+    end
+    if newcclosure then
+        fn = newcclosure(fn)
+    end
+    old = hookmetamethod(game, "__namecall", fn)
+    questState.hooked = true
+    return true
+end
+
+questState.learn = function(kind)
+    if not questState.hook() then
+        setStatus("learn needs hookmetamethod (your executor lacks it)")
+        warn("[BSSFarm] quest learn: hookmetamethod / getnamecallmethod not available")
+        return
+    end
+    if questState.learning == kind then
+        questState.learning = nil
+        setStatus("learn cancelled")
+        return
+    end
+    questState.learning = kind
+    local label = kind == "give" and "ACCEPT" or "TURN-IN"
+    setStatus("learning " .. label .. ": now " .. (kind == "give" and "accept" or "turn in") .. " the quest from Polar Bear BY HAND (60 s)")
+    task.delay(60, function()
+        if questState.learning == kind then
+            questState.learning = nil
+            setStatus("learn timed out - nothing was recorded")
+        end
+    end)
+end
+
+questState.clearLearned = function()
+    S.QuestLearnGive, S.QuestLearnComplete = "", ""
+    questState.learning = nil
+    save()
+    setStatus("learned quest calls cleared")
+    pcall(updateQuest)
+end
+
 -- Farm dongusunun icinden cagrilir (baska bir thread hareket ettirmez)
 local function polarVisit()
+    local npc = questState.npc()
     if S.QuestWalkToNpc then
         local pos = polarPos()
         if not pos then
@@ -1084,16 +1348,27 @@ local function polarVisit()
             if not moveTo(pos + Vector3.new(0, 3, 0)) then
                 return
             end
-            task.wait(0.4)
+            task.wait(0.8) -- platforma insin
         end
     end
+    pcall(questState.interact, npc)
     if S.QuestAutoTurnIn then
-        fireQuest("CompleteQuest", "Polar Bear")
-        task.wait(0.6)
+        local how = questState.send("complete")
+        setStatus(how and ("quest turn-in sent: " .. how)
+            or "no quest turn-in remote found - use 'Learn TURN-IN call' in the Quest tab")
+        task.wait(1)
     end
     if S.QuestAutoAccept then
-        fireQuest("GiveQuest", "Polar Bear")
-        task.wait(0.6)
+        local how = questState.send("give")
+        setStatus(how and ("quest accept sent: " .. how)
+            or "no quest accept remote found - use 'Learn ACCEPT call' in the Quest tab")
+        task.wait(1.2)
+        pcall(updateQuest)
+        -- listede hala Polar Bear gorevi yoksa bir kez daha dene
+        if how and questState.guiFound and not questState.hasPolar then
+            questState.send("give")
+            task.wait(1)
+        end
     end
     pcall(updateQuest)
 end
@@ -1103,14 +1378,26 @@ local function questDebug()
     local events = RS:FindFirstChild("Events")
     if events then
         for _, e in ipairs(events:GetChildren()) do
-            if string.find(string.lower(e.Name), "quest", 1, true) then
-                print("[BSSFarm] remote:", e.ClassName, e.Name)
+            local n = string.lower(e.Name)
+            if string.find(n, "quest", 1, true) or string.find(n, "npc", 1, true)
+                or string.find(n, "dialog", 1, true) or string.find(n, "talk", 1, true) then
+                print("[BSSFarm] remote:", e.ClassName, e.Name, "| class:", tostring(questState.classify(e.Name)))
             end
         end
     else
         print("[BSSFarm] ReplicatedStorage.Events not found")
     end
-    print("[BSSFarm] Polar Bear position:", tostring(polarPos()))
+    for _, kind in ipairs({ "give", "complete" }) do
+        local names = {}
+        for _, r in ipairs(questState.remotes(kind)) do
+            names[#names + 1] = r.Name
+        end
+        print("[BSSFarm] auto candidates (" .. kind .. "):", #names > 0 and table.concat(names, ", ") or "NONE")
+    end
+    print("[BSSFarm] learned ACCEPT:", S.QuestLearnGive ~= "" and S.QuestLearnGive or "none")
+    print("[BSSFarm] learned TURN-IN:", S.QuestLearnComplete ~= "" and S.QuestLearnComplete or "none")
+    local npc = questState.npc()
+    print("[BSSFarm] Polar Bear NPC:", npc and npc:GetFullName() or "NOT FOUND", "| position:", tostring(polarPos()))
     questContainerCache = nil
     local c = findQuestContainer()
     print("[BSSFarm] quest container:", c and c:GetFullName() or "NOT FOUND")
@@ -1119,6 +1406,31 @@ local function questDebug()
             print("[BSSFarm] block " .. i .. ": " .. (string.gsub(t, "\n", " | ")))
         end
     end
+    -- oyunun kendi veri tablosundaki gorevler (aktif gorev adlari)
+    pcall(function()
+        local m = RS:FindFirstChild("ClientStatCache")
+        local st = m and require(m):Get()
+        if type(st) == "table" and type(st.Quests) == "table" then
+            local lines = 0
+            local function dump(t, indent, depth)
+                for k, v in pairs(t) do
+                    lines = lines + 1
+                    if lines > 60 then
+                        return
+                    end
+                    if type(v) == "table" and depth < 3 then
+                        print("[BSSFarm] stat Quests " .. indent .. tostring(k) .. ":")
+                        dump(v, indent .. "  ", depth + 1)
+                    else
+                        print("[BSSFarm] stat Quests " .. indent .. tostring(k) .. " = " .. tostring(v))
+                    end
+                end
+            end
+            dump(st.Quests, "", 0)
+        else
+            print("[BSSFarm] stat Quests: not found in ClientStatCache")
+        end
+    end)
     pcall(updateQuest)
     print("[BSSFarm] detected fields:", #questState.fields > 0 and table.concat(questState.fields, ", ") or "none")
     setStatus("quest debug printed to the console (F9)")
@@ -4273,7 +4585,7 @@ stickerKit.check = function(inst, byPrompt)
 end
 
 connect(workspace.DescendantAdded, function(inst)
-    if S.AutoStickers and string.find(inst.Name, "[Ss][Tt][Ii][Cc][Kk][Ee][Rr]") and stickerKit.check(inst) then
+    if (S.AutoStickers or S.RemoteStickers) and string.find(inst.Name, "[Ss][Tt][Ii][Cc][Kk][Ee][Rr]") and stickerKit.check(inst) then
         stickerKit.set[inst] = true
     end
 end)
@@ -4317,7 +4629,7 @@ end
 task.spawn(function()
     task.wait(3)
     while running do
-        if S.AutoStickers then
+        if S.AutoStickers or S.RemoteStickers then
             stickerKit.scan()
         end
         task.wait(25)
@@ -4377,6 +4689,182 @@ stickerKit.trigger = function(inst)
         end
     end
 end
+
+-- ------------------------------------------------------------ Uzaktan sticker toplama
+-- Duvarda / dekorda / haritada duran TUM sticker'lari karakteri hic hareket ettirmeden,
+-- oldugun yerden tetikler: ProximityPrompt (mesafe / bekleme suresi / gorus hatti kontrolu
+-- istemci tarafinda gevsetilir), ClickDetector ve dokunma (firetouchinterest). Executor'in
+-- bu fonksiyonlari desteklemesi gerekir. Aday listesi stickerKit.set'ten gelir (isimden ve
+-- "sticker" yazan ProximityPrompt'lardan; 25 sn'de bir otomatik taranir). Oyun streaming
+-- kullandigi icin sadece yuklenmis (yakindaki) sticker'lar gorunur.
+-- (Yeni top-level local acilmasin diye stickerKit.remote icinde.)
+stickerKit.remote = {
+    count = 0, busy = false, label = nil, info = "Remote stickers: off",
+    last = setmetatable({}, { __mode = "k" }), tries = setmetatable({}, { __mode = "k" }),
+}
+
+stickerKit.remote.fire = function(inst)
+    local R = stickerKit.remote
+    local root = hrp()
+    if not root then
+        return false
+    end
+    local fpp = env.fireproximityprompt or fireproximityprompt
+    local fcd = env.fireclickdetector or fireclickdetector
+    local fti = env.firetouchinterest or firetouchinterest
+    local items = { inst }
+    for i, d in ipairs(inst:GetDescendants()) do
+        items[#items + 1] = d
+        if i >= 60 then
+            break
+        end
+    end
+    local did = false
+    local inCollectibles = false
+    do
+        local col = workspace:FindFirstChild("Collectibles")
+        inCollectibles = col ~= nil and inst:IsDescendantOf(col)
+    end
+    for _, d in ipairs(items) do
+        if d:IsA("ProximityPrompt") and type(fpp) == "function" then
+            pcall(function()
+                d.Enabled = true
+                d.HoldDuration = 0
+                d.RequiresLineOfSight = false
+                d.MaxActivationDistance = 100000
+            end)
+            if pcall(fpp, d) then
+                did = true
+            end
+        elseif d:IsA("ClickDetector") and type(fcd) == "function" then
+            pcall(function() d.MaxActivationDistance = 100000 end)
+            if pcall(fcd, d) then
+                did = true
+            end
+        elseif d:IsA("BasePart") and type(fti) == "function"
+            and (inCollectibles or d:FindFirstChildOfClass("TouchTransmitter")) then
+            if pcall(fti, root, d, 0) then
+                pcall(fti, root, d, 1)
+                did = true
+            end
+        end
+    end
+    return did
+end
+
+-- Bir tur: bilinen tum sticker'lari (menzil sinirsizsa mesafe fark etmeden) tetikler.
+-- Kac sticker tetiklendigini dondurur.
+stickerKit.remote.run = function()
+    local R = stickerKit.remote
+    if R.busy then
+        return 0
+    end
+    local root = hrp()
+    if not root then
+        return 0
+    end
+    if not ((env.fireproximityprompt or fireproximityprompt) or (env.fireclickdetector or fireclickdetector)
+        or (env.firetouchinterest or firetouchinterest)) then
+        R.info = "Remote stickers: your executor has no fireproximityprompt / fireclickdetector / firetouchinterest"
+        return 0
+    end
+    R.busy = true
+    local fired, taken = 0, 0
+    local ok, err = pcall(function()
+        local now = tick()
+        local list = {}
+        for inst in pairs(stickerKit.set) do
+            if not inst.Parent then
+                stickerKit.set[inst] = nil
+            else
+                list[#list + 1] = inst
+            end
+        end
+        for _, inst in ipairs(list) do
+            if not running then
+                break
+            end
+            local r2 = hrp()
+            if not r2 then
+                break
+            end
+            now = tick()
+            local tries = R.tries[inst] or 0
+            local wait = tries >= 3 and 300 or 20 -- 3 denemede de gitmediyse (dekor olabilir) 5 dk dokunma
+            if inst.Parent and (R.last[inst] or 0) + wait < now then
+                local p = targetPos(inst)
+                local inRange = true
+                if p and S.RemoteStickerRange > 0 then
+                    inRange = (p - r2.Position).Magnitude <= S.RemoteStickerRange
+                end
+                if p and inRange then
+                    R.last[inst] = now
+                    if R.fire(inst) then
+                        fired = fired + 1
+                        task.wait(0.15)
+                        if not inst.Parent then
+                            taken = taken + 1
+                            R.count = R.count + 1
+                            R.tries[inst] = nil
+                        else
+                            R.tries[inst] = tries + 1
+                        end
+                    else
+                        R.tries[inst] = tries + 1
+                    end
+                end
+            end
+        end
+    end)
+    R.busy = false
+    if not ok then
+        warn("[BSSFarm] remote stickers: " .. tostring(err))
+    end
+    local known = 0
+    for _ in pairs(stickerKit.set) do
+        known = known + 1
+    end
+    R.info = string.format("Remote stickers: %d known, %d triggered this round (%d collected so far)",
+        known, fired, R.count)
+    return fired
+end
+
+-- Dugme: once taramayi yenile, sonra hemen bir tur yap
+stickerKit.remote.now = function()
+    task.spawn(function()
+        local R = stickerKit.remote
+        setStatus("remote stickers: scanning the map...")
+        stickerKit.scan()
+        local t0 = tick()
+        while running and stickerKit.scanning and tick() - t0 < 12 do
+            task.wait(0.2)
+        end
+        -- elle basildi: bekleme surelerini sifirla
+        R.last = setmetatable({}, { __mode = "k" })
+        R.tries = setmetatable({}, { __mode = "k" })
+        local n = R.run()
+        setStatus(R.info)
+        if R.label then
+            R.label.Text = R.info
+        end
+    end)
+end
+
+task.spawn(function()
+    task.wait(5)
+    while running do
+        local R = stickerKit.remote
+        if S.RemoteStickers then
+            pcall(R.run)
+        else
+            R.info = "Remote stickers: off"
+        end
+        if R.label then
+            R.label.Text = R.info
+        end
+        task.wait(math.max(1, S.RemoteStickerInterval))
+    end
+end)
 
 -- Bir adim: en yakin sticker'a git, uzerinde dur, tetikle. Bir sey yaptiysa true doner.
 stickerKit.step = function(root)
@@ -5071,6 +5559,9 @@ viciousSignal.fight = function(vicious, vpos, vzone, zname)
     end
     fs.seenAt = tick()
     fs.lastPos = vpos
+    if not fs.fought and env.BSSWebhook and env.BSSWebhook.beginFight then
+        pcall(env.BSSWebhook.beginFight) -- loot dusmeden onceki stinger sayisi
+    end
     fs.fought = true
     local R = math.clamp(S.ViciousDistance, 6, 30)
     local dist = flat(root.Position, vpos)
@@ -5399,6 +5890,45 @@ env.BSSSprout.onText = function(text)
     end
 end
 
+-- Puffshroom patladiktan sonra dusen loot'u toplar. true = bu adimda loot ile ilgilendik
+-- (farmStep geri donsun), false = yapacak is yok. (Mondo loot mantigiyla ayni.)
+env.BSSSprout.step = function(root)
+    local C = env.BSSSprout
+    local L = C.puffLoot
+    if not L then
+        return false
+    end
+    if not root or not (S.PuffLoot and S.AutoPuffshrooms) then
+        C.puffLoot = nil
+        return false
+    end
+    local now = tick()
+    if now >= L.untilAt then
+        C.puffLoot = nil
+        setStatus("Puffshroom loot: done")
+        return false
+    end
+    local tok = tokenNear(L.pos, S.PuffLootRadius)
+    if tok then
+        L.got = now
+        setStatus("Puffshroom popped: collecting loot...")
+        chaseToken(tok, nil)
+        return true
+    end
+    if now - L.got < 4 then
+        setStatus("Puffshroom popped: waiting for loot...")
+        if flat(root.Position, L.pos) > 10 then
+            travelTo(L.pos + Vector3.new(0, 3, 0), 4)
+        else
+            task.wait(0.3)
+        end
+        return true
+    end
+    C.puffLoot = nil
+    setStatus("Puffshroom loot: done")
+    return false
+end
+
 -- Her saniye: sprout'lari bul / sec / bitisini izle ve hangi tarlada farm edilecegini guncelle
 env.BSSSprout.update = function()
     local C = env.BSSSprout
@@ -5437,7 +5967,17 @@ env.BSSSprout.update = function()
 
     -- aktif sprout: patladi mi / cok uzun surdu mu
     if C.cur then
+        if C.cur.Parent and C.kind[C.cur] == "puff" then
+            local lp = targetPos(C.cur)
+            if lp then
+                C.puffPos = lp -- patlayinca loot buraya duser
+            end
+        end
         if not C.cur.Parent then
+            if C.kind[C.cur] == "puff" and S.PuffLoot and C.puffPos then
+                C.puffLoot = { pos = C.puffPos, untilAt = now + math.max(5, S.PuffLootSec), got = now }
+            end
+            C.puffPos = nil
             C.popped = C.popped + 1
             C.lootUntil = now + 8 -- patlayinca tarlaya token sacar: kisa sure orada kal, topla
             C.lootZone = C.curZone and C.curZone.Name
@@ -5622,8 +6162,12 @@ do
         return nil
     end
 
+    WH.url = function()
+        return (tostring(S.WebhookUrl or ""):gsub("%s+", "")) -- yapistirirken kalan bosluk / satir sonu
+    end
+
     WH.validUrl = function(u)
-        u = tostring(u or "")
+        u = (tostring(u or ""):gsub("%s+", ""))
         return string.find(u, "^https://discord%.com/api/webhooks/") ~= nil
             or string.find(u, "^https://discordapp%.com/api/webhooks/") ~= nil
             or string.find(u, "^https://ptb%.discord%.com/api/webhooks/") ~= nil
@@ -5640,17 +6184,29 @@ do
             WH.info = "Webhook: this executor has no request function"
             return false
         end
-        local ok, res = pcall(function()
-            return req({
-                Url = S.WebhookUrl, Method = "POST",
-                Headers = { ["Content-Type"] = "application/json" },
-                Body = HttpService:JSONEncode({
-                    username = "AyzHub", content = content, embeds = embed and { embed } or nil,
-                }),
-            })
-        end)
-        local code = ok and type(res) == "table" and (res.StatusCode or res.status_code) or nil
+        local code, ok, res
+        for attempt = 1, 3 do
+            ok, res = pcall(function()
+                return req({
+                    Url = WH.url(), Method = "POST",
+                    Headers = { ["Content-Type"] = "application/json" },
+                    Body = HttpService:JSONEncode({
+                        username = "AyzHub", content = content, embeds = embed and { embed } or nil,
+                    }),
+                })
+            end)
+            code = ok and type(res) == "table" and (res.StatusCode or res.status_code) or nil
+            if code == 429 and attempt < 3 then
+                task.wait(2.5 * attempt) -- Discord hiz siniri: biraz bekleyip tekrar dene
+            else
+                break
+            end
+        end
         if ok and type(code) == "number" and code >= 200 and code < 300 then
+            WH.info = "Webhook: last message sent at " .. os.date("%H:%M:%S")
+            return true
+        end
+        if ok and code == nil and type(res) == "table" and res.Success == true then
             WH.info = "Webhook: last message sent at " .. os.date("%H:%M:%S")
             return true
         end
@@ -5659,12 +6215,15 @@ do
     end
 
     local function findKey(t, depth)
-        if type(t) ~= "table" or depth > 2 then
+        if type(t) ~= "table" or depth > 3 then
             return nil
         end
         for k, v in pairs(t) do
-            if type(k) == "string" and string.lower(k) == "stinger" and type(v) == "number" then
-                return v
+            if type(k) == "string" and type(v) == "number" then
+                local nk = string.gsub(string.lower(k), "[^%a]", "")
+                if nk == "stinger" or nk == "stingers" then
+                    return v
+                end
             end
         end
         for _, v in pairs(t) do
@@ -5695,9 +6254,13 @@ do
                 return nil
             end
             if type(st.Eggs) == "table" then
-                return findKey(st.Eggs, 0) or 0 -- esya yoksa anahtar da yoktur: 0
+                local v = findKey(st.Eggs, 0)
+                if v then
+                    return v
+                end
             end
-            return findKey(st, 0)
+            -- baska bir yerde tutuluyor olabilir: tum tabloda ara (esya hic yoksa anahtar da yoktur: 0)
+            return findKey(st, 0) or (type(st.Eggs) == "table" and 0 or nil)
         end)
         return ok and res or nil
     end
@@ -5755,27 +6318,62 @@ do
         setStatus("stinger counter reset")
     end
 
+    -- savas BASLARKEN cagrilir: stinger sayisini o an kaydeder (loot dusmeden onceki taban)
+    WH.beginFight = function()
+        local v = WH.readStinger()
+        WH.fightBefore = v or WH.last or WH.base
+    end
+
     -- farm dongusu bir Vicious Bee'nin oldugunu fark edince cagrilir
     WH.onKill = function()
         WH.kills = WH.kills + 1
         if not (S.WebhookOnKill and WH.validUrl(S.WebhookUrl)) then
             return
         end
-        local before = WH.last
+        local before = WH.fightBefore or WH.last or WH.base
+        WH.fightBefore = nil
+        local killNo = WH.kills
         task.spawn(function()
-            task.wait(25) -- loot'un toplanmasi icin bekle
+            -- stinger'lar olunce otomatik envantere gelir: artis olup 3 sn degismezse (en az 3 sn sonra)
+            -- hemen gonder, artis yoksa en fazla 15 sn bekle
+            local t0 = tick()
+            local cur, lastVal, stableSince
+            while running and tick() - t0 < 15 do
+                task.wait(1)
+                local v = WH.readStinger()
+                if v then
+                    cur = v
+                    if v ~= lastVal then
+                        lastVal, stableSince = v, tick()
+                    end
+                    if before and v > before and tick() - t0 >= 3 and tick() - stableSince >= 3 then
+                        break
+                    end
+                end
+            end
             if not running then
                 return
             end
-            local cur = WH.readStinger()
             local desc = "Stinger count could not be read"
+            local gained
             if cur and before then
-                desc = string.format("Stingers from this kill: **+%d** (now %d)", cur - before, cur)
+                gained = cur - before
+                if gained > 0 then
+                    desc = string.format("Stingers from this kill: **+%d** (now %d)", gained, cur)
+                else
+                    desc = string.format("No new stingers detected (now %d).", cur)
+                end
+            elseif cur then
+                desc = string.format("Stingers now: %d (the count before the fight was not readable)", cur)
             end
             WH.send({
                 title = "Vicious Bee killed", color = 14721072, description = desc,
-                fields = { { name = "Vicious kills (session)", value = tostring(WH.kills), inline = true } },
-                footer = { text = player.Name },
+                fields = {
+                    { name = "Vicious kills (session)", value = tostring(killNo), inline = true },
+                    { name = "Stingers gained (session)",
+                        value = (cur and WH.base) and tostring(cur - WH.base) or "?", inline = true },
+                },
+                footer = { text = player.Name }, timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
             })
             if cur then
                 WH.last = cur
@@ -5810,7 +6408,8 @@ do
             end
             print("[BSSFarm] stat table keys:", table.concat(keys, ", "))
         end
-        print("[BSSFarm] stinger count:", tostring(WH.readStinger()), "| base:", tostring(WH.base), "| kills:", WH.kills)
+        print("[BSSFarm] stinger count:", tostring(WH.readStinger()), "| base:", tostring(WH.base), "| kills:", WH.kills,
+            "| before-fight:", tostring(WH.fightBefore))
         setStatus("webhook debug printed to the console (F9)")
     end
 
@@ -6254,6 +6853,170 @@ env.BSSBloom.debug = function()
     setStatus("bloom debug printed to the console (F9)")
 end
 
+-- ------------------------------------------------------- Balonlar
+-- Tarlada balon varsa kasma desenini balonun ALTINA kaydirir (balonlar altinda polen toplayinca
+-- buyuyup patlar). Sadece "diger isler" bittikten sonraki en son adimda devreye girer: sprout /
+-- puffshroom / bloom tarlasinda, loot toplarken, token kovalarken devreye GIRMEZ.
+-- Balon adlari kesin bilinmedigi icin adinda "balloon" gecen nesneler aranir ("Balloon debug (F9)").
+-- (Yeni top-level local acilmasin diye env.BSSBalloon icinde.)
+env.BSSBalloon = {
+    list = {}, scanAt = 0, label = nil, info = "Balloons: off",
+    bad = { "hive", "gui", "icon", "string", "rope", "shadow", "attach", "beam", "particle", "shop",
+        "dispenser", "toy", "decor", "statue", "sign", "board", "npc" },
+    badParents = { Toys = true, Planters = true, PlanterModels = true, Honeycombs = true, NPCs = true,
+        Bees = true, Collectibles = true, Shops = true },
+}
+
+env.BSSBalloon.isBalloon = function(inst)
+    if not (inst:IsA("BasePart") or inst:IsA("Model")) then
+        return false
+    end
+    local n = string.lower(inst.Name)
+    if not string.find(n, "balloon", 1, true) then
+        return false
+    end
+    for _, w in ipairs(env.BSSBalloon.bad) do
+        if string.find(n, w, 1, true) then
+            return false
+        end
+    end
+    local a = inst.Parent
+    while a and a ~= workspace do
+        if env.BSSBalloon.badParents[a.Name] then
+            return false
+        end
+        local an = string.lower(a.Name)
+        if string.find(an, "hive", 1, true) or string.find(an, "honeycomb", 1, true) then
+            return false -- kovan balonlari / kovan alani
+        end
+        a = a.Parent
+    end
+    return true
+end
+
+-- Balon adayi: ust nesne (Model / Part) bulununca icine inilmez; klasorlere en fazla 3 seviye inilir.
+env.BSSBalloon.scan = function()
+    local C = env.BSSBalloon
+    local found, seen = {}, 0
+    local function visit(inst, depth)
+        if seen > 600 then
+            return
+        end
+        seen = seen + 1
+        if inst:IsA("BasePart") or inst:IsA("Model") then
+            if C.isBalloon(inst) then
+                found[#found + 1] = inst
+            end
+            return -- ust nesnenin icine inilmez (ayni balonun parcalari tekrar eklenmesin)
+        end
+        if depth < 3 then
+            for _, ch in ipairs(inst:GetChildren()) do
+                visit(ch, depth + 1)
+            end
+        end
+    end
+    for _, ch in ipairs(workspace:GetChildren()) do
+        local n = string.lower(ch.Name)
+        if string.find(n, "balloon", 1, true) then
+            -- "Balloons" klasoru ya da dogrudan balon nesnesi
+            if ch:IsA("Folder") then
+                visit(ch, 0)
+            elseif ch:IsA("BasePart") or ch:IsA("Model") then
+                if C.isBalloon(ch) then
+                    found[#found + 1] = ch
+                else
+                    for _, sub in ipairs(ch:GetChildren()) do
+                        visit(sub, 1)
+                    end
+                end
+            end
+        end
+    end
+    C.list = found
+end
+
+-- Bu tarlada balon varsa en yakin olanin konumu (yoksa nil)
+env.BSSBalloon.find = function(zone, root)
+    local C = env.BSSBalloon
+    local now = tick()
+    if now >= C.scanAt then
+        C.scanAt = now + 1.5
+        pcall(C.scan)
+    end
+    local best, bestD
+    for _, inst in ipairs(C.list) do
+        if inst.Parent then
+            local p = targetPos(inst)
+            if p and inField(zone, p, 0) then
+                local d = flat(p, root.Position)
+                if not bestD or d < bestD then
+                    best, bestD = p, d
+                end
+            end
+        end
+    end
+    if best then
+        C.info = "Farming under a balloon in " .. zone.Name
+    else
+        C.info = "Balloons: none in " .. zone.Name
+    end
+    if C.label then
+        C.label.Text = C.info
+    end
+    return best
+end
+
+-- Sprout / puffshroom / bloom tarlasinda balon yok sayilir (onlarin onceligi var)
+env.BSSBalloon.allowed = function(zone)
+    local sp = env.BSSSprout
+    if (S.AutoSprouts or S.AutoPuffshrooms) and sp and sp.zoneName == zone.Name then
+        return false
+    end
+    local bl = env.BSSBloom
+    if S.FarmBlooms and bl and bl.zoneName == zone.Name then
+        return false
+    end
+    return true
+end
+
+-- Hedefi tarlanin icinde tut (Y'ye dokunma)
+env.BSSBalloon.clampXZ = function(zone, p)
+    local l = zone.CFrame:PointToObjectSpace(p)
+    local hx = math.max(1, zone.Size.X / 2 - S.FieldMargin)
+    local hz = math.max(1, zone.Size.Z / 2 - S.FieldMargin)
+    local inside = zone.CFrame:PointToWorldSpace(
+        Vector3.new(math.clamp(l.X, -hx, hx), l.Y, math.clamp(l.Z, -hz, hz)))
+    return Vector3.new(inside.X, p.Y, inside.Z)
+end
+
+env.BSSBalloon.debug = function()
+    local C = env.BSSBalloon
+    local root = hrp()
+    print("[BSSFarm] ---------------- balloon debug ----------------")
+    print("[BSSFarm] FarmBalloons:", tostring(S.FarmBalloons), "| tracked now:", #C.list)
+    local shown = 0
+    pcall(boundedWalk, workspace, 4, 8000, function(d)
+        local n = string.lower(d.Name)
+        if string.find(n, "balloon", 1, true) and (d:IsA("BasePart") or d:IsA("Model") or d:IsA("Folder")) then
+            shown = shown + 1
+            if shown <= 40 then
+                local p = (d:IsA("BasePart") or d:IsA("Model")) and targetPos(d) or nil
+                local z = p and fieldOfPos(p)
+                print("[BSSFarm] balloon candidate:", d.ClassName, d:GetFullName(),
+                    "| accepted:", tostring((d:IsA("BasePart") or d:IsA("Model")) and C.isBalloon(d)),
+                    "| field:", z and z.Name or "none",
+                    p and root and string.format("| %.0f st", (p - root.Position).Magnitude) or "")
+            end
+        end
+        return false
+    end)
+    if shown == 0 then
+        print("[BSSFarm] nothing named *balloon* is in the workspace right now")
+        print("[BSSFarm] (press this button while a balloon is on the map)")
+    end
+    setStatus("balloon debug printed to the console (F9)")
+end
+
 local function farmStep()
     local h, root = hum(), hrp()
     if not h or not root or h.Health <= 0 then
@@ -6287,12 +7050,12 @@ local function farmStep()
             return
         end
 
-        -- Savastaydik ve bee kayboldu: yakindaysak oldu demektir. Gece boyu tekrar arama,
-        -- yerine dusen tokenlari (loot) topla.
+        -- Savastaydik ve bee kayboldu: yakindaysak oldu demektir. Gece boyu tekrar arama.
+        -- (Vicious loot'u olunce otomatik envantere gelir: yerden toplamak icin BEKLEME YOK.)
         if fs.fought then
             fs.fought = false
-            if fs.lastPos and flat(root.Position, fs.lastPos) < 70 then
-                fs.lootUntil = tick() + 10
+            if fs.lastPos and flat(root.Position, fs.lastPos) < 100 then
+                fs.lootUntil = 0
                 viciousSignal.killedAt = tick()
                 if env.BSSWebhook and env.BSSWebhook.onKill then
                     pcall(env.BSSWebhook.onKill)
@@ -6302,17 +7065,6 @@ local function farmStep()
                 end
             end
         end
-        if tick() < fs.lootUntil and fs.lastPos then
-            local ltok = tokenNear(fs.lastPos, 60)
-            setStatus("Vicious Bee is down: collecting loot...")
-            if ltok then
-                chaseToken(ltok, nil)
-            else
-                task.wait(0.3)
-            end
-            return
-        end
-
         -- Tarlada Vicious'in sivrisi (spike) varsa: bee'yi dogurmak icin ONCE ona dokun
         local spike = viciousSignal.findSpike()
         if spike then
@@ -6441,6 +7193,11 @@ local function farmStep()
 
     -- Mondo Chick: dogunca Mountain Top'a git, ustunde uc, oldur, loot'u topla (canta dolu olsa bile once bu)
     if S.KillMondo and env.BSSMondo.step(root) then
+        return
+    end
+
+    -- Puffshroom patladiysa: dusen loot'u topla (kovana donmeden once)
+    if S.PuffLoot and env.BSSSprout.step(root) then
         return
     end
 
@@ -6744,7 +7501,24 @@ local function farmStep()
         return
     end
 
-    local target = patternTarget(center, radius)
+    -- Balon: en son adim. Yukaridaki her sey (token, bloom, sprout / puffshroom, loot) once calisir;
+    -- hicbiri yoksa kasma deseni bu tarlada duran en yakin balonun altina kayar.
+    local pcenter, pradius, pforce = center, radius, false
+    if S.FarmBalloons and env.BSSBalloon.allowed(zone) then
+        local bp = env.BSSBalloon.find(zone, root)
+        if bp then
+            pcenter = Vector3.new(bp.X, center.Y, bp.Z)
+            pradius = math.max(4, S.BalloonRadius) / math.max(0.05, S.PatternSize / 100)
+            pforce = true -- "Stay" deseni secili olsa bile balonun altina git
+        end
+    elseif env.BSSBalloon.label and not S.FarmBalloons then
+        env.BSSBalloon.label.Text = "Balloons: off"
+    end
+
+    local target = patternTarget(pcenter, pradius, pforce)
+    if target and pforce then
+        target = env.BSSBalloon.clampXZ(zone, target)
+    end
     if target then
         walkTo(target, 0.6, function()
             return nearestCollectible(center, radius + S.TokenRange, zone) ~= nil
@@ -6853,8 +7627,12 @@ local function diagnose()
         need("Events.ClaimHive", events:FindFirstChild("ClaimHive"))
         need("Events.PlayerHiveCommand", events:FindFirstChild("PlayerHiveCommand"))
         if S.PolarQuest then
-            need("Events.GiveQuest", events:FindFirstChild("GiveQuest"))
-            need("Events.CompleteQuest", events:FindFirstChild("CompleteQuest"))
+            if S.QuestLearnGive == "" then
+                need("a quest ACCEPT remote (Events.GiveQuest*) - or use Learn ACCEPT", questState.remotes("give")[1])
+            end
+            if S.QuestLearnComplete == "" then
+                need("a quest TURN-IN remote (Events.CompleteQuest*) - or use Learn TURN-IN", questState.remotes("complete")[1])
+            end
         end
     end
     need("workspace.FlowerZones", workspace:FindFirstChild("FlowerZones"))
@@ -7462,6 +8240,7 @@ do
 local farmTab = tabs.Farm
 env.BSSSprout.reset = function()
     local C = env.BSSSprout
+    C.puffLoot, C.puffPos = nil, nil
     C.cur, C.curZone, C.zoneName, C.hintZone = nil, nil, nil, nil
     if S.AutoSprouts or S.AutoPuffshrooms then
         C.signalAt = tick() -- acilinca haritada zaten duran olanlari da ara
@@ -7520,6 +8299,14 @@ button(farmTab, "Sprout / puffshroom debug (F9)", function() env.BSSSprout.debug
 section(farmTab, "Puffshrooms")
 toggle(farmTab, "Farm Puffshrooms", "AutoPuffshrooms", "When a puffshroom grows, farms that field until it explodes", env.BSSSprout.reset)
 stepper(farmTab, "Give up after", "PuffGiveUpMin", 1, 1, 60, " min", "Skips a puffshroom that takes longer than this")
+toggle(farmTab, "Collect puffshroom loot", "PuffLoot", "After a puffshroom pops, collects the loot it drops (needs Farm Puffshrooms)")
+stepper(farmTab, "Loot radius", "PuffLootRadius", 10, 20, 150, " st", "Search area around where the puffshroom was")
+stepper(farmTab, "Loot max time", "PuffLootSec", 5, 5, 90, " s", "Longest time spent collecting the loot")
+section(farmTab, "Balloons")
+toggle(farmTab, "Farm under balloons", "FarmBalloons", "While farming a field, moves the pattern under a balloon in that field. Lowest priority: sprouts, puffshrooms, blooms and loot come first")
+stepper(farmTab, "Pattern radius", "BalloonRadius", 2, 4, 40, " st", "How wide the pattern is under the balloon")
+env.BSSBalloon.label = infoBox(farmTab, "Balloons: off")
+button(farmTab, "Balloon debug (F9)", function() env.BSSBalloon.debug() end)
 section(farmTab, "Bloom Settings")
 toggle(farmTab, "Farm Blooms", "FarmBlooms", "Pops the nearest selected bloom and collects its petals", env.BSSBloom.reset)
 toggle(farmTab, "Only in my farm field", "BloomOnlyFarmField", "On = only blooms in the field you are farming, never travels to another field. Off = also goes to blooms in other fields", env.BSSBloom.reset)
@@ -7642,6 +8429,9 @@ button(questTab, "Visit Polar Bear now", function()
     questState.nextVisit = 0
     setStatus(S.AutoFarm and "visit queued" or "visit queued - turn on Auto farm")
 end)
+button(questTab, "Learn ACCEPT call (then accept a quest by hand)", function() questState.learn("give") end)
+button(questTab, "Learn TURN-IN call (then turn in by hand)", function() questState.learn("complete") end)
+button(questTab, "Clear learned quest calls", function() questState.clearLearned() end)
 button(questTab, "Quest debug (prints to F9 console)", questDebug)
 end
 
@@ -7655,7 +8445,7 @@ end)
 stepper(whTab, "Report every", "WebhookMinutes", 5, 5, 180, " min", "Default 20 minutes", function()
     env.BSSWebhook.nextAt = 0
 end)
-toggle(whTab, "Message on Vicious kill", "WebhookOnKill", "Sends the stingers gained from that kill (~25 s after it dies)")
+toggle(whTab, "Message on Vicious kill", "WebhookOnKill", "Sends the stingers gained from that kill (a few seconds after it dies)")
 button(whTab, "Send test message", function() task.spawn(env.BSSWebhook.test) end)
 useColumn(whTab, "right")
 section(whTab, "Stinger tracking")
@@ -7704,6 +8494,16 @@ toggle(extTab, "Auto find stickers", "AutoStickers", "Collects stickers lying ar
 end)
 stepper(extTab, "Sticker range", "StickerRange", 20, 20, 500, " st", "Only stickers closer than this are collected")
 button(extTab, "Sticker debug (F9)", function() stickerKit.debug() end)
+section(extTab, "Collect stickers from here")
+toggle(extTab, "Collect all stickers remotely", "RemoteStickers", "Triggers every loaded sticker (walls, props, ground) from where you stand, without walking. Needs an executor with fireproximityprompt / fireclickdetector / firetouchinterest", function()
+    if S.RemoteStickers then
+        stickerKit.scan()
+    end
+end)
+stepper(extTab, "Remote round every", "RemoteStickerInterval", 1, 1, 60, " s", "Pause between two rounds of remote collecting")
+stepper(extTab, "Remote range", "RemoteStickerRange", 50, 0, 2000, " st", "0 = unlimited (every sticker the game has loaded)")
+stickerKit.remote.label = infoBox(extTab, "Remote stickers: off")
+button(extTab, "Collect all stickers now", function() stickerKit.remote.now() end)
 section(extTab, "Dispensers")
 toggle(extTab, "Collect free dispensers", "AutoDispensers", nil, function()
     if S.AutoDispensers then
