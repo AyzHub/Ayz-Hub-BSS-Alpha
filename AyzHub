@@ -1,5 +1,5 @@
 -- ============================================================================
--- AyzHub | Panda Auth key sistemi (PUSL-V4)
+-- AyzHub | Panda Auth + Key GUI (PUSL-V4)
 -- ============================================================================
 do
     local Players = game:GetService("Players")
@@ -14,7 +14,7 @@ do
     if not PUSL or type(PUSL.configure) ~= "function" then
         return warn("[Panda] Library failed to initialize.")
     end
-    PUSL.configure({ serviceId = "ayzhubss" })
+    PUSL.configure({ serviceId = "ayzhub" })
 
     local function readSavedKey()
         local ok, data = pcall(function()
@@ -330,9 +330,7 @@ do
     print("[Panda] Authenticated. Premium:", genv.AyzHubPremium)
 end
 
--- ============================================================================
--- Korumali kod asagida
--- ============================================================================
+-- Your protected code goes below this line.
 
 if not game:IsLoaded() then
     game.Loaded:Wait()
